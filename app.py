@@ -95,36 +95,49 @@ if st.sidebar.button("전술 가동"):
     else:
         st.error("데이터를 불러오지 못했네. 주말이거나 종목 코드를 확인하게나.")
 
-# --- [기존 코드 아래에 이 '추천 스캐너' 섹션을 추가하게나] ---
+# --- [기존 스캐너 섹션을 이 코드로 정밀 교체하게나] ---
 
 st.divider()
 st.header("🌟 AI 실시간 전략 추천 스캐너")
 
-# 자네가 감시하고 싶은 종목들을 여기에 다 적게나!
-candidates = ["NVDA", "TSLA", "AAPL", "MSFT", "AMD", "EIX", "005930.KRX", "000660.KRX"]
+# 감시 후보군 (데이터가 안정적인 미국 대형주 위주로 먼저 테스트해보게)
+candidates = ["NVDA", "TSLA", "AAPL", "MSFT", "AMD", "EIX", "META", "GOOGL"]
 
 if st.button("🚀 전 종목 전략 스캔 시작"):
     results = []
     progress_bar = st.progress(0)
+    status_text = st.empty()
     
     for idx, t in enumerate(candidates):
-        # 아까 만든 분석 함수를 재사용해서 확률만 쏙 뽑아오네
-        _, prob, _ = get_analysis_data(t)
-        results.append({"ticker": t, "prob": prob})
+        status_text.text(f"🔍 {t} 전술 분석 중...")
+        # 데이터가 없을 경우를 대비해 기본값 0을 설정하네
+        try:
+            _, prob, _ = get_analysis_data(t)
+            # 확률이 정상적인 숫자일 때만 결과 리스트에 담네 (TypeError 방지 핵심!)
+            if isinstance(prob, (int, float)):
+                results.append({"ticker": t, "prob": prob})
+        except:
+            continue # 에러 발생 시 해당 종목은 건너뛰네
+            
         progress_bar.progress((idx + 1) / len(candidates))
     
-    # 확률이 높은 순서대로 정렬해서 상위 3개를 보여주네
-    top_picks = sorted(results, key=lambda x: x['prob'], reverse=True)[:3]
+    status_text.text("✅ 분석 완료!")
     
-    st.write("### 🏆 AI가 선정한 오늘의 전술 TOP 3")
-    cols = st.columns(3)
-    for i, pick in enumerate(top_picks):
-        with cols[i]:
-            st.success(f"**{i+1}위: {pick['ticker']}**")
-            st.metric("추천 신뢰도", f"{pick['prob']:.1f}%")
-            
-    # 텔레그램으로 TOP 3 리포트 전송
-    top_msg = "📢 AI 선정 오늘의 TOP 3 종목\n" + "\n".join([f"{i+1}위: {p['ticker']} ({p['prob']:.1f}%)" for i, p in enumerate(top_picks)])
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={CHAT_ID}&text={top_msg}"
-    requests.get(url)
-    st.toast("오늘의 TOP 3 리포트를 사령실로 송신했네!")
+    if results:
+        # 정상적인 숫자 데이터들로만 정렬을 수행하네
+        top_picks = sorted(results, key=lambda x: x['prob'], reverse=True)[:3]
+        
+        st.write("### 🏆 AI 선정 오늘의 전술 TOP 3")
+        cols = st.columns(min(len(top_picks), 3))
+        for i, pick in enumerate(top_picks):
+            with cols[i]:
+                st.success(f"**{i+1}위: {pick['ticker']}**")
+                st.metric("추천 신뢰도", f"{pick['prob']:.1f}%")
+        
+        # 텔레그램 리포트 발송
+        top_msg = "📢 AI 선정 실시간 TOP 3\n" + "\n".join([f"{i+1}위: {p['ticker']} ({p['prob']:.1f}%)" for i, p in enumerate(top_picks)])
+        send_report_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={CHAT_ID}&text={top_msg}"
+        requests.get(send_report_url)
+        st.toast("사령실로 TOP 3 리포트를 송신했네!")
+    else:
+        st.warning("분석 가능한 종목 데이터가 없네. API 횟수 제한을 확인해보게나.")
