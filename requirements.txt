@@ -5,4 +5,5 @@ numpy
 requests
 plotly
 scipy
-kaleido==0.1.0post1
+kaleido>=1.0.0
+plotly>=6.0.0
