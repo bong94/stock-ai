@@ -5,9 +5,7 @@ import numpy as np
 import requests
 from scipy.signal import argrelextrema
 
-# --- [설정] 텔레그램 정보 (여기에 직접 입력하게!) ---
-# 예: TELEGRAM_TOKEN = "123456789:ABCdef..."
-# 예: CHAT_ID = "987654321"
+# --- [설정] 텔레그램 정보 (여기에 자네 정보를 꼭 넣게!) ---
 TELEGRAM_TOKEN = "8284260382:AAHYsS2qu0mg5G9SMm2m2Ug1I9JPR1gAAGs"
 CHAT_ID = "6107118513"
 
@@ -19,7 +17,7 @@ def send_telegram_msg(text):
         return True
     except: return False
 
-# --- [데이터] 자산 카테고리 정의 ---
+# --- [데이터] 자산 카테고리 (해외주식 한글 이름 추가) ---
 def get_assets():
     return {
         "🇰🇷 국내 주식 (가나다순)": {
@@ -28,10 +26,12 @@ def get_assets():
             "카카오": "035720.KS", "포스코홀딩스": "005490.KS", "현대차": "005380.KS",
             "SK하이닉스": "000660.KS", "LG에너지솔루션": "373220.KS"
         },
-        "🇺🇸 해외 주식 (ABC순)": {
-            "Amazon": "AMZN", "Apple": "AAPL", "Alphabet (Google)": "GOOGL",
-            "Meta": "META", "Microsoft": "MSFT", "Netflix": "NFLX",
-            "Nvidia": "NVDA", "Tesla": "TSLA"
+        "🇺🇸 해외 주식 (한글/ABC 검색 가능)": {
+            "애플 (Apple)": "AAPL", "테슬라 (Tesla)": "TSLA", "엔비디아 (Nvidia)": "NVDA",
+            "마이크로소프트 (Microsoft)": "MSFT", "아마존 (Amazon)": "AMZN", 
+            "구글 (Alphabet/Google)": "GOOGL", "메타 (Meta/Facebook)": "META", 
+            "넷플릭스 (Netflix)": "NFLX", "코인베이스 (Coinbase)": "COIN",
+            "에이엠디 (AMD)": "AMD", "브로드컴 (Broadcom)": "AVGO"
         },
         "📜 채권 (중요도순)": {
             "미국 10년물 국채금리": "^TNX",
@@ -72,16 +72,11 @@ assets = get_assets()
 # 1단계: 카테고리 선택
 category = st.sidebar.radio("자산 종류를 선택하게", list(assets.keys()))
 
-# 2단계: 종목 선택 및 검색 (자동 정렬)
+# 2단계: 종목 선택 및 검색 (한글 포함 정렬)
 raw_data = assets[category]
-if "국내" in category:
-    display_names = sorted(raw_data.keys())
-elif "해외" in category:
-    display_names = sorted(raw_data.keys())
-else:
-    display_names = list(raw_data.keys()) # 채권/지수는 설정한 순서대로
+display_names = sorted(raw_data.keys()) # 모든 카테고리를 보기 좋게 가나다/ABC순 정렬
 
-selected_name = st.sidebar.selectbox("상세 종목 검색 및 선택", display_names)
+selected_name = st.sidebar.selectbox("종목 검색 (한글 또는 영어 입력)", display_names)
 ticker = raw_data[selected_name]
 
 # 3단계: 알림 설정
@@ -90,7 +85,7 @@ st.sidebar.subheader("⏰ 알림 설정")
 alert_m = st.sidebar.select_slider("장 시작 전 알림", options=["30분 전", "15분 전", "10분 전", "5분 전", "정각"], value="10분 전")
 
 # --- [데이터 분석 및 시각화] ---
-with st.spinner('마스터 AI가 분석 중이네...'):
+with st.spinner('마스터 AI가 데이터를 분석 중이네...'):
     data = yf.download(ticker, period="6mo", interval="1d")
 
 if not data.empty and len(data) > 1:
@@ -110,7 +105,6 @@ if not data.empty and len(data) > 1:
     chart_df['지지선'] = support
     chart_df['저항선'] = resistance
     st.line_chart(chart_df)
-    
 
     # 마스터 판독
     if curr_price >= resistance:
@@ -126,7 +120,5 @@ if not data.empty and len(data) > 1:
         if send_telegram_msg(msg):
             st.success("자네의 폰으로 전송 완료했네!")
             st.balloons()
-        else:
-            st.error("토큰이나 ID가 정확한지 확인해보게!")
 else:
     st.error("데이터를 가져오는 데 실패했네.")
