@@ -1,125 +1,67 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-import numpy as np
 import requests
+import os
 import plotly.graph_objects as go
-from scipy.signal import argrelextrema
 
-# --- [1. 시스템 설정 & 텔레그램] ---
-TELEGRAM_TOKEN = "8284260382:AAHYsS2qu0mg5G9SMm2m2Ug1I9JPR1gAAGs"
-CHAT_IDS = ["6107118513"] # 지인 ID 추가 가능
+# --- [1. 보안 설정: 깃허브 Secrets에서 불러오기] ---
+# Streamlit Cloud에 배포하면 자동으로 이 키들을 연결한다네
+try:
+    ALPHA_VANTAGE_KEY = st.secrets["ALPHA_VANTAGE_KEY"]
+    TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
+    CHAT_ID = st.secrets["CHAT_ID"]
+except:
+    st.error("보안 키(Secrets)가 설정되지 않았네! 깃허브 설정을 확인하게.")
 
-# 서버 차단 방지를 위한 캐싱 (10분간 데이터 유지)
-@st.cache_data(ttl=600)
-def fetch_data(ticker_symbol):
+# --- [2. Alpha Vantage 데이터 엔진] ---
+def fetch_ai_intelligence(ticker):
     try:
-        t = yf.Ticker(ticker_symbol)
-        # 주말 대비 넉넉하게 1년치 일봉 데이터를 가져옴
-        df = t.history(period="1y", interval="1d")
-        return df, t.info
-    except:
-        return pd.DataFrame(), {}
-
-@st.cache_data(ttl=3600)
-def get_exchange_rate():
-    try:
-        ex_data = yf.download("USDKRW=X", period="1d", interval="1m")
-        return float(ex_data['Close'].iloc[-1])
-    except: return 1400.0 # 환율 에러 시 기본값
-
-def calculate_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    return 100 - (100 / (1 + (gain / loss)))
-
-# --- [2. 메인 레이아웃] ---
-st.set_page_config(page_title="AI 전략 분석 본부", layout="wide")
-st.title("🧙‍♂️ 마스터의 AI 전략 분석 본부")
-
-# 사이드바: 내 투자 정보
-st.sidebar.header("💰 내 투자 장부")
-buy_price = st.sidebar.number_input("내 평단가 (숫자만)", value=0)
-hold_count = st.sidebar.number_input("보유 수량", value=0)
-target_price = st.sidebar.number_input("목표가 설정", value=0)
-
-st.sidebar.divider()
-search_name = st.sidebar.text_input("종목명(한글/티커)", "엔비디아")
-K_MAP = {"삼성전자":"005930.KS", "SK하이닉스":"000660.KS", "현대차":"005380.KS", "엔비디아":"NVDA", "테슬라":"TSLA", "애플":"AAPL"}
-ticker = K_MAP.get(search_name, search_name)
-
-# 데이터 로드 가동
-data, info = fetch_data(ticker)
-ex_rate = get_exchange_rate()
-
-if not data.empty:
-    # 수치 정수화 및 RSI 계산
-    curr_price = int(data['Close'].iloc[-1])
-    data['RSI'] = calculate_rsi(data['Close'])
-    curr_rsi = int(data['RSI'].iloc[-1]) if not np.isnan(data['RSI'].iloc[-1]) else 50
-    
-    is_us = info.get('currency') == "USD"
-    unit = "$" if is_us else "₩"
-
-    # --- [3. 핵심 지표 리포트] ---
-    st.subheader(f"📊 {search_name} ({ticker}) 전술 분석")
-    c1, c2, c3 = st.columns(3)
-    
-    with c1:
-        st.metric("현재가", f"{unit}{curr_price:,}")
-        if is_us: st.caption(f"원화 환산: ₩{int(curr_price * ex_rate):,}")
-    
-    # 지갑 상황 분석
-    advice = "현재는 관망이 최선일세. 지지선을 지키는지 보게나."
-    if buy_price > 0 and hold_count > 0:
-        profit = (curr_price - buy_price) * hold_count
-        profit_rate = ((curr_price / buy_price) - 1) * 100
-        with c2:
-            st.metric("실시간 손익", f"{unit}{int(profit):,}", f"{profit_rate:.2f}%")
-            if is_us: st.caption(f"원화 손익: ₩{int(profit * ex_rate):,}")
+        # 뉴스 감성 분석 데이터 호출
+        url = f'https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={ALPHA_VANTAGE_KEY}'
+        res = requests.get(url).json()
         
-        # 마스터의 훈수 로직
-        if profit_rate > 15: advice = "수익이 아주 달콤하구먼! 일부 익절하여 승전보를 울리게!"
-        elif profit_rate < -15: advice = "손실이 아프지만 RSI가 낮다면 물타기 기회를 보게나."
-    else:
-        with c2:
-            st.metric("심리 지표(RSI)", f"{curr_rsi}%")
-            
-    with c3:
-        if target_price > 0:
-            prog = min(curr_price / target_price, 1.0)
-            st.write(f"🎯 목표가 달성률: {prog*100:.1f}%")
-            st.progress(prog)
+        if "feed" in res and len(res["feed"]) > 0:
+            top_news = res["feed"][0]
+            return {
+                "score": float(top_news["overall_sentiment_score"]),
+                "label": top_news["overall_sentiment_label"],
+                "title": top_news["title"],
+                "url": top_news["url"]
+            }
+        return None
+    except Exception as e:
+        return None
+
+# --- [3. 메인 화면 구성] ---
+st.set_page_config(page_title="AI 전술 사령부", layout="wide")
+st.title("🤖 글로벌 AI 전술 사령부 v2.0")
+
+ticker = st.sidebar.text_input("종목 코드 입력 (예: NVDA, 005930.KRX)", "NVDA")
+
+if st.sidebar.button("전술 가동"):
+    with st.spinner('글로벌 뉴스 기류 분석 중...'):
+        intel = fetch_ai_intelligence(ticker)
+        
+        if intel:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("현재 뉴스 기류", intel["label"])
+            with col2:
+                st.metric("감성 점수", f"{intel['score']:.2f}")
+
+            # AI의 전략적 조언
+            st.divider()
+            st.subheader("🧠 AI 전략 보고")
+            if intel["score"] > 0.15:
+                st.success(f"✅ {ticker}의 주변 기류가 매우 긍정적이네. 매수 전술이 유리할 것으로 보임.")
+            elif intel["score"] < -0.15:
+                st.error(f"⚠️ 부정적인 뉴스가 감지되었네. 보수적인 방어 태세를 유지하게.")
+            else:
+                st.info("🟡 특이사항 없는 잔잔한 흐름일세. 관망을 제안하네.")
+
+            st.write(f"📰 **최신 주요 뉴스:** [{intel['title']}]({intel['url']})")
         else:
-            st.write("🎯 목표가를 입력하면 달성률을 계산해주네.")
+            st.warning("데이터를 불러오지 못했네. 종목 코드나 API 횟수를 확인하게나.")
 
-    st.info(f"🤖 **마스터의 전술 제언:** {advice}")
-
-    # --- [4. 캔들 차트 시각화] ---
-    fig = go.Figure(data=[go.Candlestick(
-        x=data.index, open=data['Open'], high=data['High'], 
-        low=data['Low'], close=data['Close'],
-        increasing_line_color='red', decreasing_line_color='blue'
-    )])
-    
-    # 내 평단가 라인 표시 (시각적 무게감)
-    if buy_price > 0:
-        fig.add_hline(y=buy_price, line_dash="dot", line_color="yellow", annotation_text="나의 매수점")
-    
-    fig.update_layout(xaxis_rangeslider_visible=False, template="plotly_dark", height=500)
-    st.plotly_chart(fig, width='stretch')
-
-    # 텔레그램 리포트 버튼
-    if st.button("🚀 지인들에게 전술 리포트 전송"):
-        report = f"🔔 [{search_name} 보고]\n현재가: {unit}{curr_price:,}"
-        if is_us: report += f" (₩{int(curr_price * ex_rate):,})"
-        if buy_price > 0: report += f"\n수익률: {profit_rate:.1f}%"
-        report += f"\n전략: {advice}"
-        
-        for cid in CHAT_IDS:
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": cid, "text": report})
-        st.success("본부 및 지인들에게 보고를 완료했네!")
-
-else:
-    st.error("데이터 로드 실패! 주식 서버가 잠시 응답을 거부하고 있네. 5분 뒤 새로고침을 해보게나.")
+# --- [4. 필요한 라이브러리 체크] ---
+# requirements.txt에 requests가 포함되어 있어야 하네!
