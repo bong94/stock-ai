@@ -7,16 +7,10 @@ from plotly.subplots import make_subplots
 import numpy as np
 
 # --- [1. 보안 및 기초 설정] ---
-ALPHA_VANTAGE_KEY = st.secrets["ALPHA_VANTAGE_KEY"]
-TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
-CHAT_ID = st.secrets["CHAT_ID"]
-
-# 종목 코드 매핑 (한글 검색용)
-KOREAN_TICKER_MAP = {
-    "엔비디아": "NVDA", "테슬라": "TSLA", "애플": "AAPL", "마이크로소프트": "MSFT",
-    "삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "에코프로": "247540.KQ",
-    "비트코인": "BTC-USD"
-}
+# Streamlit Secrets에서 키를 가져오네. 없으면 에러 방지를 위해 공백을 둠.
+ALPHA_VANTAGE_KEY = st.secrets.get("ALPHA_VANTAGE_KEY", "")
+TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
+CHAT_ID = st.secrets.get("CHAT_ID", "")
 
 def get_usd_krw():
     """실시간 USD/KRW 환율 가져오기"""
@@ -24,17 +18,19 @@ def get_usd_krw():
         rate = yf.Ticker("USDKRW=X").history(period="1d")['Close'].iloc[-1]
         return float(rate)
     except:
-        return 1380.0 # 기본값
+        return 1380.0  # 연결 실패 시 기본 기준율
 
-# --- [2. 내 주식 포트폴리오 데이터 관리] ---
+# --- [2. 내 주식 포트폴리오 관리 (세션 저장)] ---
 if 'my_portfolio' not in st.session_state:
     st.session_state.my_portfolio = []
 
-# --- [3. 분석 및 시각화 엔진] ---
+# --- [3. 핵심 분석 엔진] ---
 def get_analysis_data(ticker):
     try:
+        # 데이터 로드 (6개월치)
         df = yf.download(ticker, period="6mo", interval="1d", progress=False)
-        if len(df) < 20: return None, 50, []
+        if df.empty or len(df) < 10: 
+            return None, 50, []
         
         # 뉴스 감성 분석
         url = f'https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={ALPHA_VANTAGE_KEY}'
@@ -51,82 +47,83 @@ def get_analysis_data(ticker):
         return None, 50, []
 
 # --- [4. 메인 UI 구성] ---
-st.set_page_config(page_title="AI 전술 사령부 v8.0", layout="wide")
-exchange_rate = get_usd_krw()
+st.set_page_config(page_title="AI 전술 사령부 v8.1", layout="wide")
+ex_rate = get_usd_krw()
 
-# 사이드바: 내 주식 등록
+# 사이드바: 내 주식 등록 (에러 방지 로직 강화)
 st.sidebar.header("📥 내 보급품(주식) 등록")
-with st.sidebar.form("portfolio_form"):
-    p_name = st.text_input("종목명", placeholder="예: 삼성전자")
-    p_ticker = st.text_input("티커", placeholder="예: 005930.KS")
-    p_price = st.number_input("평단가 (해외는 달러, 국내는 원)", min_value=0.0)
-    if st.form_submit_button("포트폴리오에 추가"):
-        st.session_state.my_portfolio.append({"name": p_name, "ticker": p_ticker.upper(), "buy_price": p_price})
-        st.sidebar.success(f"{p_name} 등록 완료!")
+with st.sidebar.form("p_form"):
+    st.write("에디슨 인터내셔널 등록 시 'EIX'를 입력하게.")
+    name = st.text_input("종목명", "에디슨 인터내셔널")
+    tk = st.text_input("티커 (예: EIX, 005930.KS)", "EIX")
+    bp = st.number_input("평단가 (달러/원 구분)", value=60.21)
+    if st.form_submit_button("포트폴리오 추가"):
+        if tk.strip():
+            st.session_state.my_portfolio.append({"name": name, "ticker": tk.strip().upper(), "buy_price": bp})
+            st.sidebar.success(f"{name} 등록 완료!")
+        else:
+            st.sidebar.error("티커를 정확히 입력하게!")
 
-# 메인 타이틀
+# 메인 화면
 st.title("🛡️ AI 실전 자산 포트폴리오")
 
-# [A] 포트폴리오 현황창
+# [A] 포트폴리오 현황 (ValueError 방지형)
 if st.session_state.my_portfolio:
-    cols = st.columns(len(st.session_state.my_portfolio))
-    for idx, stock in enumerate(st.session_state.my_portfolio):
-        ticker_data = yf.download(stock['ticker'], period="1d", progress=False)
-        if not ticker_data.empty:
-            curr_p = ticker_data['Close'].iloc[-1].item()
-            profit = ((curr_p - stock['buy_price']) / stock['buy_price']) * 100
+    p_cols = st.columns(len(st.session_state.my_portfolio))
+    for idx, item in enumerate(st.session_state.my_portfolio):
+        # 1일치 데이터를 가져와 현재가 확인
+        data = yf.download(item['ticker'], period="5d", progress=False)
+        if not data.empty:
+            curr = data['Close'].iloc[-1].item()
+            is_kr = item['ticker'].endswith(".KS") or item['ticker'].endswith(".KQ")
             
-            with cols[idx]:
-                color = "green" if profit >= 0 else "red"
-                st.markdown(f"**{stock['name']}**")
-                st.metric("현재가", f"{curr_p:,.2f}", f"{profit:.2f}%")
-                if st.button("상세분석", key=f"ana_{idx}"):
-                    search_input = stock['name'] # 분석 섹션으로 연결
+            # 수익률 및 통화 단위 설정
+            profit = ((curr - item['buy_price']) / item['buy_price']) * 100
+            unit = "원" if is_kr else "$"
+            
+            with p_cols[idx]:
+                st.markdown(f"**{item['name']}**")
+                st.metric("현재가", f"{unit}{curr:,.2f}", f"{profit:.2f}%")
+                if not is_kr:
+                    st.caption(f"원화 가치: {curr * ex_rate:,.0f}원")
 else:
-    st.info("아직 등록된 주식이 없네. 사이드바에서 자네의 포지션을 등록하게나.")
+    st.info("왼쪽에서 자네의 주식을 등록하면 AI가 감시를 시작하네.")
 
 st.divider()
 
-# [B] 개별 종목 캔들 & 전술 분석 (기존 v7.0 기능 강화)
-st.header("🔍 개별 종목 정밀 타격 분석")
-search_input = st.text_input("분석할 종목 (한글/티커)", "엔비디아")
-target_ticker = KOREAN_TICKER_MAP.get(search_input, search_input).upper()
-is_kr = target_ticker.endswith(".KS") or target_ticker.endswith(".KQ")
+# [B] 개별 종목 캔들 차트 & 전술 분석
+st.header("🔍 정밀 전술 분석실")
+target_input = st.text_input("분석할 티커 입력", "EIX").upper()
 
 if st.button("⚔️ 전술 가동"):
-    df, prob, feeds = get_analysis_data(target_ticker)
-    
-    if df is not None:
-        last_price = df['Close'].iloc[-1].item()
-        res_level = df['High'].iloc[-20:].max().item() # 저항선
-        sup_level = df['Low'].iloc[-20:].min().item()  # 지지선
-        stop_loss = sup_level * 0.97                 # 손절선(-3%)
-
-        # 화폐 단위 설정
-        unit = "원" if is_kr else "$"
-        curr_display = f"{unit}{last_price:,.2f}"
-        if not is_kr:
-            curr_display += f" (약 {last_price * exchange_rate:,.0f}원)"
-
-        # 캔들 차트
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(
-            x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-            name="Candle", increasing_line_color='#FF4B4B', decreasing_line_color='#0083B0'
-        ))
-        fig.add_hline(y=res_level, line_dash="dash", line_color="magenta", annotation_text="🚧 저항")
-        fig.add_hline(y=sup_level, line_dash="dash", line_color="cyan", annotation_text="🛡️ 지지")
-        fig.add_hline(y=stop_loss, line_dash="dot", line_color="red", annotation_text="🛑 손절")
+    with st.spinner('차트와 뉴스를 분석 중일세...'):
+        df, prob, feeds = get_analysis_data(target_input)
         
-        fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=500)
-        st.plotly_chart(fig, use_container_width=True)
-
-        # 결과 리포트 & 텔레그램
-        st.subheader(f"📋 {search_input} AI 전략 보고서")
-        col1, col2 = st.columns(2)
-        col1.metric("현재가", curr_display)
-        col2.metric("AI 신뢰도", f"{prob:.1f}%")
-
-        tg_msg = f"⚔️ [{search_input}] 리포트\n- 현재가: {curr_display}\n- AI확률: {prob:.1f}%\n- 🛑손절가: {unit}{stop_loss:,.2f}"
-        requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={CHAT_ID}&text={tg_msg}")
-        st.success("사령실 텔레그램 송신 완료!")
+        if df is not None:
+            last = df['Close'].iloc[-1].item()
+            res = df['High'].iloc[-20:].max().item() # 20일 저항선
+            sup = df['Low'].iloc[-20:].min().item()  # 20일 지지선
+            
+            # 캔들봉 차트 시각화
+            fig = go.Figure(data=[go.Candlestick(
+                x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+                increasing_line_color='#FF4B4B', decreasing_line_color='#0083B0'
+            )])
+            
+            fig.add_hline(y=res, line_dash="dash", line_color="magenta", annotation_text="🚧 저항")
+            fig.add_hline(y=sup, line_dash="dash", line_color="cyan", annotation_text="🛡️ 지지")
+            
+            fig.update_layout(title=f"{target_input} 캔들 분석", template="plotly_dark", xaxis_rangeslider_visible=False)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # 리포트 출력 및 알람
+            is_target_kr = target_input.endswith(".KS") or target_input.endswith(".KQ")
+            u = "원" if is_target_kr else "$"
+            
+            st.subheader(f"📊 AI 전술 결과: {prob:.1f}% 확신")
+            st.write(f"현재가: {u}{last:,.2f} | 지지선: {u}{sup:,.2f} | 저항선: {u}{res:,.2f}")
+            
+            # 텔레그램 알람
+            msg = f"⚔️ [{target_input}] 리포트\n- 현재가: {u}{last:,.2f}\n- AI확률: {prob:.1f}%\n- 지지선: {u}{sup:,.2f}"
+            requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={CHAT_ID}&text={msg}")
+            st.success("사령실 텔레그램으로 전술을 송신했네!")
