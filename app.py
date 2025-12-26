@@ -4,67 +4,93 @@ import yfinance as yf
 import requests
 import os
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# --- [1. 보안 및 기본 설정] ---
+# --- [1. 보안 및 설정] ---
 ALPHA_VANTAGE_KEY = st.secrets["ALPHA_VANTAGE_KEY"]
 TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
 CHAT_ID = st.secrets["CHAT_ID"]
 
-# --- [2. 핵심 지능 함수들] ---
+# --- [2. 데이터 수집 및 확률 계산] ---
+def get_analysis_data(ticker):
+    try:
+        # 데이터 로드 (최근 1개월)
+        df = yf.download(ticker, period="1mo", interval="1d", progress=False)
+        if len(df) < 2: return None, None, None
+        
+        # 뉴스 감성 점수 (Alpha Vantage)
+        url = f'https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={ALPHA_VANTAGE_KEY}'
+        news_res = requests.get(url).json()
+        feeds = news_res.get("feed", [])[:3]
+        
+        avg_score = 0
+        if feeds:
+            avg_score = sum([float(f['overall_sentiment_score']) for f in feeds]) / len(feeds)
+            
+        # 확률 계산 (단순화: 뉴스 감성 + 최근 수익률)
+        last_close = df['Close'].iloc[-1].item()
+        prev_close = df['Close'].iloc[-2].item()
+        change = (last_close - prev_close) / prev_close
+        
+        prob = 50 + (avg_score * 40) + (change * 100)
+        prob = min(max(prob, 5), 95)
+        
+        return df, prob, feeds
+    except:
+        return None, 50, []
 
-def get_sentiment_and_news(ticker):
-    """뉴스 감성 분석 및 요약용 데이터 추출"""
-    url = f'https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={ALPHA_VANTAGE_KEY}'
-    res = requests.get(url).json()
-    if "feed" in res and len(res["feed"]) > 0:
-        return res["feed"][:3] # 상위 뉴스 3개 요약용
-    return []
+# --- [3. 메인 화면 구성] ---
+st.title("🧙‍♂️ AI 전술 사령부 v4.1")
 
-def send_telegram_signal(msg):
-    """텔레그램으로 전술 신호 발송"""
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={CHAT_ID}&text={msg}"
-    requests.get(url)
-
-# --- [3. 스트림릿 UI] ---
-st.set_page_config(page_title="AI 사령부 v3.0", layout="wide")
-st.title("🧙‍♂️ AI 전술 사령부: 캔들 & 뉴스 통합")
-
-# 추천 종목 리스트 (AI가 감시할 후보군)
-watch_list = ["NVDA", "TSLA", "AAPL", "005930.KRX", "000660.KRX"]
-selected_ticker = st.sidebar.selectbox("감시 종목 선택", watch_list)
+ticker = st.sidebar.text_input("종목 코드 (예: NVDA, 005930.KRX)", "NVDA")
 
 if st.sidebar.button("전술 가동"):
-    with st.spinner('AI가 차트와 뉴스를 교차 분석 중일세...'):
-        # [A] 캔들 데이터 가져오기 (yfinance)
-        df = yf.download(selected_ticker, period="3mo", interval="1d")
+    df, prob, feeds = get_analysis_data(ticker)
+    
+    if df is not None:
+        last_price = df['Close'].iloc[-1].item()
         
-        # [B] 뉴스 및 감성 분석
-        feeds = get_sentiment_and_news(selected_ticker)
-        avg_score = sum([float(f['overall_sentiment_score']) for f in feeds]) / len(feeds) if feeds else 0
-
-        # [C] 캔들 그래프 그리기
-        fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-        fig.update_layout(title=f"{selected_ticker} 캔들 차트", xaxis_rangeslider_visible=False)
+        # [A] 캔들 차트 + 장 종료 지점(점선) 표시
+        fig = go.Figure()
+        
+        # 캔들 추가
+        fig.add_trace(go.Candlestick(
+            x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+            name="Candlestick"
+        ))
+        
+        # 장 종료 지점 가로 점선 추가 (자네가 요청한 기능일세!)
+        fig.add_hline(
+            y=last_price, 
+            line_dash="dot", 
+            line_color="red", 
+            annotation_text=f"Last Close: {last_price:.2f}", 
+            annotation_position="bottom right"
+        )
+        
+        fig.update_layout(title=f"{ticker} 분석 리포트", xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
-
-        # [D] AI 요약 및 추천 로직 (자네가 말한 53% 등 확률 계산)
-        st.subheader("📝 AI 뉴스 분석 요약")
-        for f in feeds:
-            st.write(f"- {f['title']} (감성: {f['overall_sentiment_label']})")
-
-        # 인공지능 매수/매도 확률 계산 (가중치: 뉴스 60% + 최근 추세 40%)
-        trend = (df['Close'].iloc[-1] - df['Close'].iloc[-5]) / df['Close'].iloc[-5]
-        prob = 50 + (avg_score * 50) + (trend * 100) # 간단한 확률 모델
-        prob = min(max(prob, 10), 95) # 10%~95% 사이로 제한
-
+        
+        # [B] 분석 요약 및 리포트
         st.divider()
         col1, col2 = st.columns(2)
-        with col1:
-            st.write(f"### 🤖 AI 추천: {'🟢 매수' if prob > 50 else '🔴 매도'}")
-            st.write(f"### 📊 신뢰 확률: {prob:.1f}%")
         
-        # 텔레그램 전송
-        signal_msg = f"🚀 AI 전략 리포트\n종목: {selected_ticker}\n판단: {'매수' if prob > 50 else '매도'}\n확률: {prob:.1f}%\n주요뉴스: {feeds[0]['title'] if feeds else '없음'}"
-        send_telegram_signal(signal_msg)
-        st.success("텔레그램 사령실로 전략 리포트를 송신했네!")
+        with col1:
+            st.metric("AI 매수/매도 확률", f"{prob:.1f}%")
+            if prob > 55: st.success("🎯 현재 매수 기류가 강하네!")
+            elif prob < 45: st.error("💀 매도 혹은 관망을 권고하네.")
+            else: st.info("⚖️ 중립적인 구간일세.")
+            
+        with col2:
+            st.subheader("📰 뉴스 요약 리포트")
+            for f in feeds:
+                st.write(f"- **{f['title']}**")
+                st.caption(f"감성: {f['overall_sentiment_label']} (점수: {f['overall_sentiment_score']})")
+
+        # [C] 텔레그램 전송
+        report = f"🚀 [{ticker}] 전술 보고\n- 현재가: {last_price:.2f}\n- 매수확률: {prob:.1f}%\n- 판단: {'매수 권장' if prob > 55 else '매도/관망'}"
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={CHAT_ID}&text={report}"
+        requests.get(url)
+        st.toast("사령관님 폰으로 리포트를 전송했네!")
+    else:
+        st.error("데이터를 불러오지 못했네. 주말이거나 종목 코드를 확인하게나.")
