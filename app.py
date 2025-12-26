@@ -105,3 +105,4 @@ if not data.empty and len(data) > 1:
         if send_telegram_msg(msg): st.success("텔레그램으로 보냈네!")
 else:
     st.error("데이터를 가져올 수 없네.")
+
