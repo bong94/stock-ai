@@ -95,5 +95,39 @@ st.subheader("🔔 알림 설정 (준비 중)")
 target_price = st.number_input("알림을 받을 목표가를 입력하세요", value=int(current_price))
 if st.button("알림 예약"):
     st.balloons() # 축하 풍선!
-    st.success(f"{target_price}원 도달 시 폰으로 알림을 보낼 준비가 되었습니다!")
+    st.success(f"{target_price}원 도달 시 폰으로 알림을 보낼 준비가 되었습니다!") #여기가 기본
 
+st.write("---")
+st.subheader(f"📰 {ticker} 관련 최신 뉴스")
+
+# 뉴스 가져오기 함수
+def get_stock_news(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        news = stock.news[:5] # 최신 뉴스 5개 가져오기
+        return news
+    except:
+        return []
+
+news_list = get_stock_news(ticker)
+
+if news_list:
+    for item in news_list:
+        # 안전하게 제목과 링크 가져오기 (에러 방지용 .get 사용)
+        title = item.get('title', '제목 없음')
+        link = item.get('link', '#')
+        publisher = item.get('publisher', '출처 미상')
+        
+        with st.expander(title): 
+            st.write(f"**출처:** {publisher}")
+            st.write(f"**링크:** [뉴스 보러가기]({link})")
+            st.info("💡 마스터의 팁: 이 뉴스가 주가에 미칠 영향을 AI가 분석 중입니다...")
+else:
+    st.write("최근 관련 뉴스가 없습니다.")
+
+# 알림 설정 버튼 (이건 그대로 둬도 좋네)
+st.write("---")
+st.subheader("🔔 알림 설정")
+if st.button("내 폰으로 알림 예약"):
+    st.balloons()
+    st.success("알림 기능이 곧 활성화됩니다!")
