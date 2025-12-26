@@ -3,5 +3,4 @@ yfinance
 pandas
 numpy
 requests
-streamlit-tradingview-widget
 scipy
