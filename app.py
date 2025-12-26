@@ -6,7 +6,7 @@ import requests
 import plotly.graph_objects as go
 from scipy.signal import argrelextrema
 
-# --- [1. 설정] 텔레그램 정보 ---
+# --- [1. 설정] 텔레그램 ---
 TELEGRAM_TOKEN = "8284260382:AAHYsS2qu0mg5G9SMm2m2Ug1I9JPR1gAAGs"
 CHAT_ID = "6107118513"
 
@@ -18,102 +18,90 @@ def send_telegram_msg(text):
         return True
     except: return False
 
-# --- [2. 기능] 환율 및 AI 분석 로직 ---
-@st.cache_data(ttl=3600)
-def get_exchange_rate():
-    try:
-        ex_data = yf.Ticker("USDKRW=X").history(period="1d")
-        return float(ex_data['Close'].iloc[-1])
-    except: return 1350.0
+# --- [2. 기능] AI 알고리즘 ---
+def calculate_trade_signal(curr, support, resistance):
+    # 가격이 지지선에 가까우면 매수(%), 저항선에 가까우면 매도(%)
+    total_range = resistance - support
+    if total_range <= 0: return "관망", 50
+    
+    # 0(지지선) ~ 100(저항선) 사이의 위치
+    pos = ((curr - support) / total_range) * 100
+    
+    if pos < 30: # 지지선 근처
+        strength = (30 - pos) / 30 * 100
+        return "적극 매수", min(100, int(strength))
+    elif pos > 70: # 저항선 근처
+        strength = (pos - 70) / 30 * 100
+        return "적극 매도", min(100, int(strength))
+    else:
+        return "보유/관망", 50
 
 def analyze_ai_lines(df):
-    if len(df) < 20: return float(df['Low'].min()), float(df['High'].max())
     low_vals = df['Low'].values.flatten()
     high_vals = df['High'].values.flatten()
+    # order=10으로 하여 좀 더 굵직한 지지/저항선을 찾음
     iloc_min = argrelextrema(low_vals, np.less, order=10)[0]
     iloc_max = argrelextrema(high_vals, np.greater, order=10)[0]
+    
     support = float(low_vals[iloc_min[-1]]) if len(iloc_min) > 0 else float(df['Low'].min())
     resistance = float(high_vals[iloc_max[-1]]) if len(iloc_max) > 0 else float(df['High'].max())
     return support, resistance
 
-# --- [3. 데이터] 자산 목록 ---
-def get_assets():
-    return {
-        "🇰🇷 국내 주식": {"삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "현대차": "005380.KS", "에코프로": "086520.KQ"},
-        "🇺🇸 해외 주식": {"애플 (Apple)": "AAPL", "테슬라 (Tesla)": "TSLA", "엔비디아 (Nvidia)": "NVDA", "마이크로소프트": "MSFT"},
-        "📜 채권/지수": {"미국 10년물": "^TNX", "나스닥 100": "^NDX", "코스피": "^KS11"}
-    }
+# --- [3. 메인 화면] ---
+st.set_page_config(page_title="AI 트레이딩 마스터", layout="wide")
+st.title("🧙‍♂️ 마스터의 AI 트레이딩 비서")
 
-# --- [4. 메인 화면 구성] ---
-st.set_page_config(page_title="AI 마스터 트레이너", layout="wide")
-st.title("🧙‍♂️ 마스터의 캔들 분석 시스템")
+# 종목 리스트
+assets = {
+    "🇰🇷 국내 주식": {"삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "현대차": "005380.KS"},
+    "🇺🇸 해외 주식": {"애플 (Apple)": "AAPL", "테슬라 (Tesla)": "TSLA", "엔비디아 (Nvidia)": "NVDA"}
+}
 
-assets = get_assets()
 category = st.sidebar.radio("자산 종류", list(assets.keys()))
 selected_name = st.sidebar.selectbox("종목 선택", sorted(assets[category].keys()))
 ticker = assets[category][selected_name]
 
-st.sidebar.write("---")
-time_unit = st.sidebar.selectbox("⏰ 차트 주기", ["1분", "5분", "1시간", "1일", "1개월", "1년"], index=3)
-
-# 주기 매핑
+# 주기 선택
+time_unit = st.sidebar.selectbox("⏰ 차트 주기", ["1분", "5분", "1시간", "1일", "1개월"], index=3)
 mapping = {
     "1분": {"p": "1d", "i": "1m"}, "5분": {"p": "5d", "i": "5m"},
     "1시간": {"p": "1mo", "i": "60m"}, "1일": {"p": "1y", "i": "1d"},
-    "1개월": {"p": "5y", "i": "1mo"}, "1년": {"p": "max", "i": "1mo"}
+    "1개월": {"p": "5y", "i": "1mo"}
 }
 
 # 데이터 로드
 data = yf.download(ticker, period=mapping[time_unit]["p"], interval=mapping[time_unit]["i"])
-ex_rate = get_exchange_rate()
 
 if not data.empty and len(data) > 1:
     curr_price = float(data['Close'].iloc[-1])
     support, resistance = analyze_ai_lines(data)
+    signal, strength = calculate_trade_signal(curr_price, support, resistance)
     
-    # 상단 대시보드
-    is_us = "해외" in category
-    price_fmt = lambda x: f"${x:,.2f} (₩{x*ex_rate:,.0f})" if is_us else f"₩{int(x):,}"
+    # 1. 매수/매도 % 브라우저 표시
+    st.markdown(f"### 🎯 오늘의 전략: <span style='color: {'red' if '매수' in signal else 'blue' if '매도' in signal else 'gray'}'>{signal} ({strength}%)</span>", unsafe_allow_html=True)
     
-    c1, c2, c3 = st.columns(3)
-    c1.metric("현재가", price_fmt(curr_price))
-    c2.metric("AI 지지", price_fmt(support))
-    c3.metric("AI 저항", price_fmt(resistance))
+    col1, col2, col3 = st.columns(3)
+    col1.metric("현재가", f"{curr_price:,.2f}")
+    col2.metric("AI 지지 (매수)", f"{support:,.2f}")
+    col3.metric("AI 저항 (매도)", f"{resistance:,.2f}")
 
-    # --- [그래프] 빨강(양봉)/파랑(음봉) 캔들 차트 ---
+    # 2. 캔들 차트 (한글화 및 한국식 색상)
     fig = go.Figure(data=[go.Candlestick(
         x=data.index,
         open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'],
         increasing_line_color='red', decreasing_line_color='blue',
         name=selected_name
     )])
-    
     fig.update_layout(
-        xaxis_rangeslider_visible=False,
-        template="plotly_dark",
-        xaxis=dict(tickformat="%Y년 %m월 %d일", title="날짜/시간")
+        xaxis_rangeslider_visible=False, template="plotly_dark",
+        xaxis=dict(tickformat="%Y년 %m월 %d일")
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- [뉴스] KeyError 방지 로직 보강 ---
+    # 3. 뉴스 및 텔레그램 전송
     st.write("---")
-    st.subheader("📰 최신 뉴스 분석")
-    try:
-        raw_news = yf.Ticker(ticker).news
-        if raw_news:
-            for n in raw_news[:3]:
-                title = n.get('title', '제목 정보 없음') # .get 사용으로 KeyError 차단
-                link = n.get('link', '#')
-                with st.expander(f"📌 {title}"):
-                    st.write(f"[기사 원문 보기]({link})")
-        else:
-            st.info("현재 뉴스가 없군.")
-    except:
-        st.write("뉴스를 가져오는 중 지연이 발생했네.")
-
-    # 텔레그램 전송
-    if st.button("🚀 분석 결과 전송"):
-        msg = f"🔔 [{selected_name}]\n가격: {price_fmt(curr_price)}\n지지: {price_fmt(support)}\n저항: {price_fmt(resistance)}"
-        if send_telegram_msg(msg): st.success("전송 완료!")
+    if st.button("🚀 텔레그램으로 현재 전략 전송"):
+        msg = f"🔔 [{selected_name}]\n현재가: {curr_price:,.0f}\n전략: {signal} ({strength}%)\n지지: {support:,.0f} / 저항: {resistance:,.0f}"
+        if send_telegram_msg(msg): st.success("텔레그램으로 보냈네!")
 else:
-    st.error("데이터 로드 실패!")
+    st.error("데이터를 가져올 수 없네.")
