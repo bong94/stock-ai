@@ -134,3 +134,46 @@ if st.button("AI 학습 저장"):
     st.info("사령관님의 매도 전략이 AI에 학습되었습니다.")
 
 time.sleep(300); st.rerun()
+
+# (기본 라이브러리 및 설정은 v59.0과 동일하되, 긴급 알림 로직 추가)
+
+# ==========================================================
+# 6. [신규: 긴급 타격 알림] - 돌발 상황 실시간 무전 (삭제 없음)
+# ==========================================================
+st.divider()
+st.subheader("🚨 실시간 긴급 정찰/타격 시스템")
+
+# 5분 단위로 시세를 체크하여 사령관님께 긴급 무전을 보냅니다.
+if "last_alert_time" not in st.session_state:
+    st.session_state.last_alert_time = {}
+
+for item in assets:
+    ticker = item['ticker']
+    try:
+        # 실시간 가격 정찰
+        current_p = float(yf.Ticker(ticker).history(period="1d")['Close'].iloc[-1].item())
+        buy_p = float(item['buy_price'])
+        yield_pct = ((current_p - buy_p) / buy_p) * 100
+
+        # 긴급 보고 조건 1: 추가 매수 타점 도달 (-12% 이하)
+        if yield_pct <= -12.0:
+            msg = f"‼️ [긴급/추매] {item['name']} 작전 신호 발생!\n현재 수익률 {yield_pct:.1f}%로 추가 매수 권장 타점에 진입했습니다. 즉시 확인하십시오!"
+            # 1시간 내 중복 알림 방지
+            if ticker not in st.session_state.last_alert_time or (time.time() - st.session_state.last_alert_time[ticker] > 3600):
+                requests.post(f"https://api.telegram.org/bot{st.secrets['TELEGRAM_TOKEN']}/sendMessage", 
+                              data={'chat_id': user_data.get("chat_id"), 'text': msg})
+                st.session_state.last_alert_time[ticker] = time.time()
+                st.warning(f"🚨 {item['name']} 긴급 추매 신호 송신됨")
+
+        # 긴급 보고 조건 2: 익절/목표가 도달 (+10% 이상)
+        elif yield_pct >= 10.0:
+            msg = f"🚀 [긴급/익절] {item['name']} 전과 확대 보고!\n현재 수익률 {yield_pct:.1f}%로 익절 구간에 도달했습니다. 수익 확정을 검토하십시오!"
+            if ticker not in st.session_state.last_alert_time or (time.time() - st.session_state.last_alert_time[ticker] > 3600):
+                requests.post(f"https://api.telegram.org/bot{st.secrets['TELEGRAM_TOKEN']}/sendMessage", 
+                              data={'chat_id': user_data.get("chat_id"), 'text': msg})
+                st.session_state.last_alert_time[ticker] = time.time()
+                st.balloons()
+                st.success(f"🎊 {item['name']} 긴급 익절 신호 송신됨")
+    except:
+        continue
+
