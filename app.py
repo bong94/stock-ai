@@ -145,3 +145,13 @@ for hour, minute in report_schedule:
 # 5. [AI 학습] - 텔레그램 매도 입력 기록 및 학습
 # ==========================================================
 st.divider()
+st.subheader("📝 AI 매도 기록 학습 (텔레그램 연동)")
+user_sell_input = st.text_input("매도 기록 (예: 매도 TQQQ 62.0 20주)")
+if st.button("AI 학습 저장 및 기록"):
+    # [지시사항] 매도 가격을 학습하여 이후 전략 수립에 반영 [cite: 2025-12-27]
+    user_data["sell_history"].append({"timestamp": str(korea_now), "content": user_sell_input})
+    with open(USER_PORTFOLIO, "w", encoding="utf-8") as f:
+        json.dump(user_data, f, ensure_ascii=False, indent=4)
+    st.info("사령관님의 매도 전략이 AI에 학습되었습니다.")
+
+time.sleep(300); st.rerun()
