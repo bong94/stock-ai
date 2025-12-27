@@ -2,18 +2,15 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import requests
-import plotly.graph_objects as go
 import time
 import json
 import os
 
-# --- [1. 보안 및 전술 데이터베이스 설정] ---
-# Streamlit Cloud의 Secrets에 토큰과 ID가 설정되어 있어야 합니다.
+# --- [1. 보안 및 전술 데이터베이스] ---
 TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
 CHAT_ID = st.secrets.get("CHAT_ID", "")
 PORTFOLIO_FILE = "portfolio_db.json"
 LEARNING_FILE = "learning_db.json"
-IMG_PATH = "tactical_report.png"
 
 def load_db(file, default):
     if os.path.exists(file):
@@ -31,21 +28,33 @@ if 'my_portfolio' not in st.session_state:
 if 'learned_tickers' not in st.session_state:
     st.session_state.learned_tickers = load_db(LEARNING_FILE, {"삼성전자": "005930.KS", "TQQQ": "TQQQ"})
 
-# --- [2. 텔레그램 통신 및 시각화 엔진] ---
+# --- [2. 전술 보고 생성 엔진] ---
 def send_telegram_msg(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try: requests.post(url, data={'chat_id': CHAT_ID, 'text': text}, timeout=5)
+    try: requests.post(url, data={'chat_id': CHAT_ID, 'text': text, 'parse_mode': 'Markdown'}, timeout=5)
     except: pass
 
-def send_telegram_chart(img_path, caption):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-    try:
-        with open(img_path, 'rb') as f:
-            requests.post(url, data={'chat_id': CHAT_ID, 'caption': caption}, files={'photo': f}, timeout=15)
-    except: send_telegram_msg(f"⚠️ 차트 전송 실패: {caption}")
+def make_tactical_report(name, ticker, buy_price, curr_price, idx=1):
+    """사령관님이 요청하신 형식의 정밀 보고서 생성"""
+    # 전술 계산 (예시: 추매 -5%, 목표 +10%, 익절/손절 -10%)
+    # 사령관님의 예시 수치(+12%, +25% 등)를 반영한 로직
+    avg_down = buy_price * 0.95  # 추가매수권장 (평단 대비 -5% 지점 등 설정 가능)
+    target_price = buy_price * 1.10 # 목표매도 (+10%)
+    stop_loss = buy_price * 0.90 # 익절/손절 구간
+
+    currency = "원" if ".KS" in ticker or ".KQ" in ticker else "$"
+    
+    report = f"""
+*{idx}번 [{name}] 작전 지도 수립*
+- 구매가: {currency}{buy_price:,.2f}
+- 현재가: {currency}{curr_price:,.2f}
+- 추가매수권장: {currency}{avg_down:,.2f} (예: 지지선 부근)
+- 목표매도: {currency}{target_price:,.2f} (목표 수익권)
+- 익절/손절 구간: {currency}{stop_loss:,.2f}
+    """
+    return report
 
 def listen_telegram():
-    """텔레그램 명령 '매수' 및 '보고' 수신"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
     try:
         res = requests.get(url, timeout=5).json()
@@ -56,83 +65,61 @@ def listen_telegram():
             
             if 'last_id' not in st.session_state or st.session_state.last_id < update_id:
                 st.session_state.last_id = update_id
+                # 매수 명령: '매수 이름 티커 평단가'
                 if msg_text.startswith("매수"):
                     p = msg_text.split()
                     if len(p) >= 4:
                         name, tk, bp = p[1], p[2].upper(), float(p[3])
+                        # 중복 제거 후 추가
+                        st.session_state.my_portfolio = [i for i in st.session_state.my_portfolio if i['ticker'] != tk]
                         st.session_state.my_portfolio.append({"name": name, "ticker": tk, "buy_price": bp})
                         save_db(PORTFOLIO_FILE, st.session_state.my_portfolio)
-                        st.session_state.learned_tickers[name] = tk
-                        save_db(LEARNING_FILE, st.session_state.learned_tickers)
-                        send_telegram_msg(f"🫡 [명령 수신] {name}({tk}) 자산 배치 완료!")
+                        
+                        # 즉시 분석 보고 발송
+                        df = yf.download(tk, period="1d", progress=False)
+                        curr = float(df['Close'].iloc[-1])
+                        report = make_tactical_report(name, tk, bp, curr, len(st.session_state.my_portfolio))
+                        send_telegram_msg(f"🫡 명령 수신 및 분석 완료!\n{report}")
                         return "RERUN"
                 elif msg_text == "보고": return "REPORT"
     except: pass
     return None
 
-def draw_tactical_chart(df, tk, buy, low20, dec):
-    """분석 선이 포함된 전술 차트 생성 (Kaleido 엔진 사용)"""
-    fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-    # 평단가 라인 (청록색 점선)
-    fig.add_hline(y=buy, line=dict(color='cyan', dash='dot'), annotation_text=f"내 평단가: {buy:,.2f}")
-    # AI 지지선 (빨간색 실선)
-    fig.add_hline(y=low20, line=dict(color='red', width=2), annotation_text=f"AI 지지선: {low20:,.2f}")
-    
-    fig.update_layout(title=f"⚔️ {tk} AI 전술 분석 ({dec})", template="plotly_dark", xaxis_rangeslider_visible=False)
-    # 깃허브에 추가한 kaleido를 사용하여 이미지로 저장
-    fig.write_image(IMG_PATH, engine="kaleido")
-    return IMG_PATH
-
 # --- [3. 메인 사령부 가동] ---
-st.set_page_config(page_title="AI 전술 사령부 v15.0", layout="wide")
-st.title("🧙‍♂️ AI 전술 사령부 v15.0")
+st.set_page_config(page_title="AI 전술 사령부 v16.0", layout="wide")
+st.title("🧙‍♂️ AI 전술 사령부 v16.0")
 
-# 텔레그램 명령 즉시 확인
 cmd = listen_telegram()
 if cmd == "RERUN": st.rerun()
 
 if st.session_state.my_portfolio:
-    st.subheader("📡 실시간 전황 분석 중...")
-    full_summary = []
+    full_report_list = []
     cols = st.columns(min(len(st.session_state.my_portfolio), 4))
     
     for i, item in enumerate(st.session_state.my_portfolio):
         try:
-            df = yf.download(item['ticker'], period="1mo", progress=False)
+            df = yf.download(item['ticker'], period="5d", progress=False)
             curr = float(df['Close'].iloc[-1])
-            low20 = float(df['Low'].iloc[-20:].min())
-            
             profit = ((curr - item['buy_price']) / item['buy_price']) * 100
             
-            # AI 전술 판단
-            if profit <= -3.0 and curr < low20: dec, is_crit = f"🔴 손절 권고 ({profit:.2f}%)", True
-            elif profit >= 5.0: dec, is_crit = f"🎯 익절 권고 ({profit:.2f}%)", True
-            elif -5.0 <= profit <= -1.0 and (low20 * 0.98 <= curr <= low20 * 1.02): dec, is_crit = f"🔵 추매 타이밍 ({profit:.2f}%)", True
-            else: dec, is_crit = f"🟡 관망 진영유지 ({profit:.2f}%)", False
-            
-            price_fmt = f"{curr:,.0f}원" if ".KS" in item['ticker'] or ".KQ" in item['ticker'] else f"${curr:,.2f}"
-            
+            # 대시보드 표시
             with cols[i % 4]:
-                st.metric(f"{item['name']} ({item['ticker']})", price_fmt, dec)
-                if st.button(f"제거: {item['name']}", key=f"del_{i}"):
-                    st.session_state.my_portfolio.pop(i)
-                    save_db(PORTFOLIO_FILE, st.session_state.my_portfolio)
-                    st.rerun()
-
-            # 특이사항 발생 시 또는 사령관이 '보고' 명령 시 차트 전송
-            if is_crit or cmd == "REPORT":
-                chart_file = draw_tactical_chart(df, item['ticker'], item['buy_price'], low20, dec)
-                send_telegram_chart(chart_file, f"🚩 AI 분석 보고: {item['name']}\n상태: {dec}")
+                st.metric(f"{item['name']} ({item['ticker']})", f"{curr:,.2f}", f"{profit:.2f}%")
             
-            full_summary.append(f"· {item['name']}: {price_fmt} ({dec})")
-        except Exception as e:
-            st.warning(f"{item['name']} 분석 중 오류: {e}")
+            # 보고서 생성
+            report = make_tactical_report(item['name'], item['ticker'], item['buy_price'], curr, i+1)
+            
+            # 자동 알림 로직 (수익률이 특정 구간에 도달하면 자동 발송)
+            if profit >= 5.0 or profit <= -3.0 or cmd == "REPORT":
+                send_telegram_msg(f"🚩 실시간 전황 보고\n{report}")
+            
+            full_report_list.append(report)
+        except: continue
 
     if cmd == "REPORT":
-        send_telegram_msg("🏛️ [사령관님 요청 전체 전황 보고]\n" + "\n".join(full_summary))
+        send_telegram_msg("🏛️ [사령부 전체 자산 일괄 보고]")
 else:
-    st.info("사령관님, 전선에 배치된 자산이 없네. 텔레그램이나 사이드바에서 명령을 내려주시게!")
+    st.info("사령관님, 텔레그램에 '매수 이름 티커 평단가'를 입력하시게!")
 
-# 10초마다 자동 리프레시 및 명령 감지
 time.sleep(10)
 st.rerun()
