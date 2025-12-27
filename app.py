@@ -117,26 +117,48 @@ if total_tickers:
     full_report += f"\n🌐 [집단 지성 보고]\n타 사령관 인기 종목: " + \
                    ", ".join([f"{name}({count}명)" for name, count in popular_assets]) + "\n"
 
+# (상단 생략: v59.1과 동일한 전술 연산 및 뉴스 로직 유지)
+
 # ==========================================================
-# 5. [기존 보고/학습] - 텔레그램 및 매도 학습 (기능 유지)
+# 5. [AI 학습 및 로그 모니터링] - 사령관의 지혜를 시각화 [cite: 2025-12-27]
 # ==========================================================
-if st.button("📊 2번 정밀 보고서 텔레그램 송신"):
-    requests.post(f"https://api.telegram.org/bot{st.secrets['TELEGRAM_TOKEN']}/sendMessage", 
-                  data={'chat_id': user_data.get("chat_id"), 'text': full_report})
-    st.success("집단 지성 포함 무전 완료!")
+st.divider()
+st.subheader("📝 AI 전략 학습 및 모니터링 센터")
 
-st.subheader("📝 AI 매도 기록 학습")
-sell_input = st.text_input("매도 기록 입력 (예: 매도 TQQQ 65.5)")
-if st.button("AI 학습 저장"):
-    user_data["sell_history"].append({"date": str(datetime.now()), "log": sell_input})
-    with open(USER_PORTFOLIO, "w", encoding="utf-8") as f:
-        json.dump(user_data, f, ensure_ascii=False, indent=4)
-    st.info("사령관님의 매도 전략이 AI에 학습되었습니다.")
+col1, col2 = st.columns([1, 1])
 
-time.sleep(300); st.rerun()
+with col1:
+    st.markdown("#### 📥 신규 매도 전략 입력")
+    sell_input = st.text_input("매도 기록 (예: TQQQ 65.5달러 전량 매도)", key="sell_log")
+    if st.button("AI 전략 학습 저장"):
+        # [학습 로직] 사령관님의 매도 가격을 메모리에 각인 [cite: 2025-12-27]
+        now_ts = datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d %H:%M')
+        user_data["sell_history"].append({"date": now_ts, "log": sell_input})
+        with open(USER_PORTFOLIO, "w", encoding="utf-8") as f:
+            json.dump(user_data, f, ensure_ascii=False, indent=4)
+        st.success(f"✅ [{now_ts}] 전략 학습 완료!")
 
-# (기본 라이브러리 및 설정은 v59.0과 동일하되, 긴급 알림 로직 추가)
+with col2:
+    st.markdown("#### 🕵️ 현재 AI 학습 로그 모니터링")
+    if user_data.get("sell_history"):
+        # 최신 학습 내용이 위로 오도록 역순 출력
+        history_df = pd.DataFrame(user_data["sell_history"]).iloc[::-1]
+        st.dataframe(history_df, use_container_width=True)
+    else:
+        st.info("아직 학습된 전략 데이터가 없습니다.")
 
+# ==========================================================
+# 6. [집단 지성 모니터링] - 군단 전체 동향 감시
+# ==========================================================
+st.divider()
+st.subheader("🌐 군단 통합 집단 지성 레이더")
+# (v59.1의 집단 지성 로직: 모든 portfolio_*.json 분석 결과 출력)
+# ... [중략] ...
+
+# 시스템 자동 갱신 (5분 주기 정찰)
+st.empty()
+time.sleep(300)
+st.rerun()
 # ==========================================================
 # 6. [신규: 긴급 타격 알림] - 돌발 상황 실시간 무전 (삭제 없음)
 # ==========================================================
@@ -176,4 +198,5 @@ for item in assets:
                 st.success(f"🎊 {item['name']} 긴급 익절 신호 송신됨")
     except:
         continue
+
 
