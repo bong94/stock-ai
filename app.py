@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 import pytz
 
-# --- [1. 다중 사용자 식별 및 데이터베이스 설정] ---
+# --- [1. 시스템 설정 및 다중 사용자 DB] ---
 def load_json(file_path, default_data):
     if os.path.exists(file_path):
         try:
@@ -21,13 +21,11 @@ def save_json(file_path, data):
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-# 사이드바에서 사용자 식별
 st.sidebar.title("🎖️ 사령부 로그인")
 user_id = st.sidebar.text_input("사령관 성함을 입력하세요", value="방문자")
 USER_PORTFOLIO = f"portfolio_{user_id}.json"
-USER_HISTORY = f"history_{user_id}.json"
 
-# 초기 데이터 설정 (사령관님 계정 '봉94'에는 기존 데이터 자동 로드)
+# 사령관님(봉94) 전용 정예 데이터 보존
 if user_id == "봉94":
     default_assets = [
         {"name": "대상홀딩스우", "ticker": "084695.KS", "buy_price": 14220},
@@ -43,73 +41,94 @@ if 'my_portfolio' not in st.session_state or st.session_state.get('last_user') !
     st.session_state.my_portfolio = load_json(USER_PORTFOLIO, default_assets)
     st.session_state.last_user = user_id
 
-# --- [2. AI 지능형 가변 전술 엔진] ---
+# --- [2. AI 가변 전술 지능 엔진] ---
 def calculate_ai_tactics(ticker, buy_price):
     try:
         df = yf.download(ticker, period="20d", progress=False)
-        if df.empty: return buy_price * 0.88, buy_price * 1.25, buy_price * 1.10
+        if df.empty: return -12.0, 25.0, 10.0
+        # 변동성(ATR) 기반 가변 퍼센트 산출
         atr_pct = ((df['High'] - df['Low']).mean() / df['Close'].mean()) * 100
-        # 종목별 변동성 기반 가변 수치 계산
-        return buy_price * (1 - (max(atr_pct * 1.5, 5) / 100)), \
-               buy_price * (1 + (max(atr_pct * 3.0, 10) / 100)), \
-               buy_price * (1 + (max(atr_pct * 1.2, 5) / 100))
-    except: return buy_price * 0.88, buy_price * 1.25, buy_price * 1.10
+        return max(atr_pct * 1.5, 5.0), max(atr_pct * 3.0, 10.0), max(atr_pct * 1.2, 5.0)
+    except:
+        return 12.0, 25.0, 10.0
 
-# --- [3. 보고서 및 알림 엔진] ---
+# --- [3. 출력 포맷 엔진: 달러, 원화, 퍼센트 통합] ---
 def get_exchange_rate():
     try:
         ex_data = yf.download("USDKRW=X", period="1d", progress=False)
         return float(ex_data['Close'].iloc[-1])
     except: return 1442.0
 
+def format_all(price, ticker, rate, diff_pct=None):
+    """지정된 사진 양식으로 포맷팅: $0.00 (₩0) (0%)"""
+    is_kor = ".K" in ticker
+    pct_str = f" ({diff_pct:+.1f}%)" if diff_pct is not None else ""
+    
+    if is_kor:
+        return f"₩{int(round(price, 0)):,}{pct_str}"
+    else:
+        krw_val = int(round(price * rate, 0))
+        return f"${price:,.2f} (₩{krw_val:,}){pct_str}"
+
 def send_msg(text):
     token = st.secrets.get("TELEGRAM_TOKEN", ""); chat_id = st.secrets.get("CHAT_ID", "")
     if token and chat_id: requests.post(f"https://api.telegram.org/bot{token}/sendMessage", data={'chat_id': chat_id, 'text': text})
 
-def generate_tactical_report(title=f"🏛️ [{user_id} 사령관 전략 보고]"):
-    rate = get_exchange_rate()
-    reports = []
-    for i, item in enumerate(st.session_state.my_portfolio):
-        ticker = item['ticker']; buy_p = float(item['buy_price'])
-        try:
-            df = yf.download(ticker, period="2d", progress=False)
-            curr_p = float(df['Close'].iloc[-1])
-            ai_buy, ai_target, ai_profit = calculate_ai_tactics(ticker, buy_p)
-            is_kor = ".K" in ticker
-            def fmt(p): return f"₩{p:,.0f}" if is_kor else f"${p:,.2f} (₩{p*rate:,.0f})"
-            # 사진 양식 기반 보고서 생성
-            reports.append(f"{i+1}번 [{item['name']}] AI 전술\n- 현재가: {fmt(curr_p)}\n🎯 추매가: {fmt(ai_buy)}\n🚀 목표가: {fmt(ai_target)}\n🛡️ 익절가: {fmt(ai_profit)}")
-        except: continue
-    return f"{title}\n\n" + "\n\n----------\n\n".join(reports)
-
-# --- [4. UI 구성: 종목 추가 및 관리] ---
-st.title(f"⚔️ AI 전술 사령부 v50.0")
+# --- [4. 메인 관제 화면] ---
+st.title(f"⚔️ AI 전술 사령부 v50.2")
 st.subheader(f"👤 현재 지휘관: {user_id}")
+rate = get_exchange_rate()
 
-# 신규 종목 추가 섹터 (다른 사용자를 위한 기능)
 with st.expander("➕ 신규 타격 목표(종목) 추가"):
     c1, c2, c3 = st.columns(3)
-    new_name = c1.text_input("종목명")
-    new_ticker = c2.text_input("티커 (예: AAPL)")
-    new_buy = c3.number_input("구매가", min_value=0.0)
-    if st.button("부대 합류 (추가)"):
-        st.session_state.my_portfolio.append({"name": new_name, "ticker": new_ticker.upper(), "buy_price": new_buy})
+    n_name = c1.text_input("종목명")
+    n_ticker = c2.text_input("티커")
+    n_buy = c3.number_input("구매가", min_value=0.0, format="%.2f")
+    if st.button("부대 배치"):
+        st.session_state.my_portfolio.append({"name": n_name, "ticker": n_ticker.upper(), "buy_price": n_buy})
         save_json(USER_PORTFOLIO, st.session_state.my_portfolio)
-        st.success(f"{new_name} 대원 배치 완료!")
         st.rerun()
 
-# 자산 현황 테이블 출력
 if st.session_state.my_portfolio:
-    df_display = pd.DataFrame(st.session_state.my_portfolio)
-    st.table(df_display)
+    report_list = []
+    telegram_report = f"🏛️ [{user_id} 사령관 AI 전략 보고]\n(환율: ₩{rate:,.1f})\n\n"
+    
+    for i, item in enumerate(st.session_state.my_portfolio):
+        tkr = item['ticker']; b_p = float(item['buy_price'])
+        try:
+            df = yf.download(tkr, period="2d", progress=False)
+            curr_p = float(df['Close'].iloc[-1])
+            
+            # AI 가변 전술가 계산 및 적용
+            m_buy_pct, m_target_pct, m_profit_pct = calculate_ai_tactics(tkr, b_p)
+            v_buy = b_p * (1 - m_buy_pct/100)
+            v_target = b_p * (1 + m_target_pct/100)
+            v_profit = b_p * (1 + m_profit_pct/100)
+            curr_diff = ((curr_p - b_p) / b_p) * 100
 
-if st.button("📊 텔레그램으로 전술 보고 송신"):
-    send_msg(generate_tactical_report())
+            # 사진 양식 보고 데이터 생성
+            res = {
+                "종목": f"{i+1}번 [{item['name']}]",
+                "구매가": format_all(b_p, tkr, rate),
+                "현재가": format_all(curr_p, tkr, rate, curr_diff),
+                "AI 추매가": format_all(v_buy, tkr, rate, -m_buy_pct),
+                "AI 목표가": format_all(v_target, tkr, rate, m_target_pct),
+                "AI 익절가": format_all(v_profit, tkr, rate, m_profit_pct)
+            }
+            report_list.append(res)
+            
+            # 텔레그램용 텍스트 구성
+            telegram_report += f"{res['종목']} 작전 지점\n- 구매: {res['구매가']}\n- 현재: {res['현재가']}\n- 추매: {res['AI 추매가']}\n- 목표: {res['AI 목표가']}\n\n"
+        except: continue
+        
+    st.table(pd.DataFrame(report_list))
+    if st.button("📊 텔레그램으로 정밀 전술 보고 전송"):
+        send_msg(telegram_report)
 
-# --- [5. 자동화 스케줄러 (클라우드 상시 가동)] ---
+# --- [5. 자동화 스케줄러] ---
 now = datetime.now(pytz.timezone('Asia/Seoul'))
 if now.hour == 8 and 50 <= now.minute <= 55:
-    send_msg(f"📡 {user_id} 사령관님, 아침 정찰 보고를 확인하십시오.")
+    send_msg(f"📡 {user_id} 사격 통제 장치 가동. 오늘의 AI 가변 타점 보고드립니다.")
     time.sleep(600)
 
 time.sleep(300); st.rerun()
