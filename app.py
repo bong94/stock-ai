@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 import pytz
 
-# --- [1. 데이터베이스 및 사용자 식별 (철저 고정)] ---
+# --- [1. 데이터베이스 및 사령관 식별] ---
 def load_json(file_path, default_data):
     if os.path.exists(file_path):
         try:
@@ -22,9 +22,10 @@ def save_json(file_path, data):
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 st.sidebar.title("🎖️ 사령부 로그인")
-user_id = st.sidebar.text_input("사령관 성함을 입력하세요", value="방문자")
+user_id = st.sidebar.text_input("사령관 성함을 입력하세요", value="봉94")
 USER_PORTFOLIO = f"portfolio_{user_id}.json"
 
+# 봉94 사령관 데이터 기본값 고정
 if user_id == "봉94":
     default_assets = [
         {"name": "대상홀딩스우", "ticker": "084695.KS", "buy_price": 14220},
@@ -43,107 +44,81 @@ if 'user_data' not in st.session_state or st.session_state.get('last_user') != u
     st.session_state.my_chat_id = saved_data.get("chat_id", "")
     st.session_state.last_user = user_id
 
-# --- [2. AI 전술 엔진 (뉴스/변동성/추천 고정)] ---
+# --- [2. 2번 양식 고정 출력 엔진] ---
 def get_ai_tactics(ticker, buy_price):
     try:
         df = yf.download(ticker, period="20d", progress=False)
         atr_pct = ((df['High'] - df['Low']).mean() / df['Close'].mean()) * 100
-        return max(atr_pct * 1.5, 5.0), max(atr_pct * 3.0, 10.0), atr_pct
-    except: return 12.0, 25.0, 3.0
-
-def get_news_radar(ticker):
-    try:
-        t = yf.Ticker(ticker)
-        news = t.news[:2]
-        return "\n".join([f"• {n['title']}" for n in news]) if news else "뉴스 없음"
-    except: return "뉴스 불가"
+        return max(atr_pct * 1.5, 12.0), max(atr_pct * 3.0, 25.0), max(atr_pct * 1.2, 10.0), atr_pct
+    except: return 12.0, 25.0, 10.0, 3.0
 
 def format_all(price, ticker, rate, diff_pct=None):
+    """사령관님 지정 정밀 양식: $00 (₩00) (0%)"""
     is_k = ".K" in ticker
     p_str = f" ({diff_pct:+.1f}%)" if diff_pct is not None else ""
     if is_k: return f"₩{int(round(price, 0)):,}{p_str}"
     else: return f"${price:,.2f} (₩{int(round(price * rate, 0)):,}){p_str}"
 
-def send_telegram(text, target_chat_id):
-    token = st.secrets.get("TELEGRAM_TOKEN", "")
-    if token and target_chat_id:
-        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", data={'chat_id': target_chat_id, 'text': text})
+def create_tactical_report(item, rate, idx):
+    """2번 사진의 정밀 양식을 생성하는 핵심 함수"""
+    tk, bp = item['ticker'], float(item['buy_price'])
+    try:
+        d = yf.download(tk, period="2d", progress=False)
+        cp = float(d['Close'].iloc[-1])
+        m_buy, m_target, m_profit, atr = get_ai_tactics(tk, bp)
+        
+        v_buy = bp * (1 - m_buy/100)
+        v_target = bp * (1 + m_target/100)
+        v_profit = bp * (1 + m_profit/100)
+        c_diff = ((cp - bp) / bp) * 100
+        
+        report = f"{idx}번 [{item['name']}] 작전 지도 수립 (환율: ₩{rate:,.1f})\n"
+        report += f"- 구매가: {format_all(bp, tk, rate)}\n"
+        report += f"- 현재가: {format_all(cp, tk, rate, c_diff)}\n"
+        report += f"- 추가매수권장: {format_all(v_buy, tk, rate, -m_buy)}\n"
+        report += f"- 목표매도: {format_all(v_target, tk, rate, m_target)}\n"
+        report += f"- 익절 구간: {format_all(v_profit, tk, rate, m_profit)}\n\n"
+        
+        # 지능형 한 줄 평 고정
+        if c_diff < -10: insight = "📉 과매도 구간 진입. 분할 매수 고려."
+        elif c_diff > 20: insight = "🚀 목표가 도달 중. 익절 준비."
+        else: insight = "🛡️ [전술 대기] 현재 정상 범위 내 움직임입니다. 관망하십시오."
+        
+        report += f"💡 AI 전술 지침: {insight}\n"
+        return report, cp, c_diff, v_buy, v_target, insight
+    except: return None
 
-# --- [3. 신규 전술: 4단계 보고 체계 로직] ---
-def generate_recommendation_report(title_prefix, rate):
-    """장 시작전/종료전 추천 종목 및 뉴스 보고 생성"""
-    report = f"🎯 {title_prefix} 타격 후보 보고\n"
-    # 예시: 시장 지표 학습을 통한 추천 로직 (실제는 더 복잡한 알고리즘 작동)
-    market_watch = ["TSLA", "NVDA", "AAPL", "QQQ"] 
-    for tkr in market_watch:
-        try:
-            d = yf.download(tkr, period="2d", progress=False)
-            cp = float(d['Close'].iloc[-1])
-            news = get_news_radar(tkr)
-            report += f"\n[{tkr}] 현재: {format_all(cp, tkr, rate)}\n🗞️ 핵심 뉴스: {news[:50]}...\n"
-        except: continue
-    return report
-
-# --- [4. 메인 관제 화면] ---
-st.title(f"⚔️ AI 전술 사령부 v50.8")
+# --- [3. 메인 관제 및 자동 보고] ---
+st.title(f"⚔️ AI 전술 사령부 v50.9")
 rate = yf.download("USDKRW=X", period="1d", progress=False)['Close'].iloc[-1]
 
 if st.session_state.my_portfolio:
-    display_list = []; tele_msg = f"🏛️ [{user_id} 사령관 정기 전략 보고]\n\n"
-    emergency_flag = False
+    display_list = []; full_telegram_msg = f"🏛️ [봉94 사령관 정기 전략 보고]\n\n"
     
-    for item in st.session_state.my_portfolio:
-        tk, bp = item['ticker'], float(item['buy_price'])
-        try:
-            d = yf.download(tk, period="2d", progress=False)
-            cp = float(d['Close'].iloc[-1])
-            m_buy, m_target, atr = get_ai_tactics(tk, bp)
-            v_buy, v_target = bp * (1 - m_buy/100), bp * (1 + m_target/100)
-            c_diff = ((cp - bp) / bp) * 100
-            
-            # 비상 보고 판단 (급락 시)
-            if c_diff < -5.0: emergency_flag = True
-            
+    for i, item in enumerate(st.session_state.my_portfolio):
+        res = create_tactical_report(item, rate, i+1)
+        if res:
+            report_text, cp, c_diff, v_buy, v_target, insight = res
             display_list.append({
                 "종목": f"[{item['name']}]",
-                "현재가": format_all(cp, tk, rate, c_diff),
-                "AI 추매": format_all(v_buy, tk, rate, -m_buy),
-                "AI 목표": format_all(v_target, tk, rate, m_target),
-                "최신 뉴스": get_news_radar(tk)[:30] + "..."
+                "현재가": format_all(cp, item['ticker'], rate, c_diff),
+                "AI 지침": insight
             })
-            tele_msg += f"[{item['name']}]\n- 현재: {format_all(cp, tk, rate, c_diff)}\n- 🎯 추매: {format_all(v_buy, tk, rate, -m_buy)}\n🗞️ 뉴스: {get_news_radar(tk)}\n\n"
-        except: continue
-        
-    st.table(pd.DataFrame(display_list))
-    
-    # 수동 전송 버튼들
-    c1, c2, c3 = st.columns(3)
-    if c1.button("🚨 비상 보고 송신"):
-        send_telegram(f"⚠️ [비상 전술 보고]\n\n{tele_msg}", st.session_state.my_chat_id)
-    if c2.button("📊 정기 보고 송신"):
-        send_telegram(tele_msg, st.session_state.my_chat_id)
-    if c3.button("🔍 추천 종목 스캔"):
-        rec_report = generate_recommendation_report("실시간", rate)
-        send_telegram(rec_report, st.session_state.my_chat_id)
+            full_telegram_msg += report_text + "\n" + "-"*20 + "\n"
 
-# --- [5. 지능형 스케줄러 (4단계 보고 자동화)] ---
+    st.table(pd.DataFrame(display_list))
+    if st.button("📊 2번 양식으로 정밀 보고 송신"):
+        requests.post(f"https://api.telegram.org/bot{st.secrets['TELEGRAM_TOKEN']}/sendMessage", 
+                      data={'chat_id': st.session_state.my_chat_id, 'text': full_telegram_msg})
+        st.success("2번 정밀 양식으로 보고를 완료했습니다.")
+
+# --- [4. 스케줄러 자동 보고 (2번 양식 고정)] ---
 now = datetime.now(pytz.timezone('Asia/Seoul'))
 if st.session_state.my_chat_id:
-    # 1. 장 시작 전 추천 종목 보고 (08:30)
-    if now.hour == 8 and 30 <= now.minute <= 35:
-        report = generate_recommendation_report("장 시작 전", rate)
-        send_telegram(report, st.session_state.my_chat_id)
-        time.sleep(600)
-    
-    # 2. 정기 보고 (08:50) [고정 기능]
-    elif now.hour == 8 and 50 <= now.minute <= 55:
-        send_telegram(f"📡 정기 보고서 송신 완료.", st.session_state.my_chat_id)
-        time.sleep(600)
-        
-    # 3. 장 종료 전 추천 종목 보고 (15:10)
-    elif now.hour == 15 and 10 <= now.minute <= 15:
-        report = generate_recommendation_report("장 종료 전", rate)
-        send_telegram(report, st.session_state.my_chat_id)
+    # 08:50 정기 보고 시에도 2번 양식 사용
+    if now.hour == 8 and 50 <= now.minute <= 55:
+        requests.post(f"https://api.telegram.org/bot{st.secrets['TELEGRAM_TOKEN']}/sendMessage", 
+                      data={'chat_id': st.session_state.my_chat_id, 'text': full_telegram_msg})
         time.sleep(600)
 
 time.sleep(300); st.rerun()
