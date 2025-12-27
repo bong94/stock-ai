@@ -10,51 +10,59 @@ import os
 TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
 CHAT_ID = st.secrets.get("CHAT_ID", "")
 PORTFOLIO_FILE = "portfolio_db.json"
-LEARNING_FILE = "learning_db.json"
 
-def load_db(file, default):
-    if os.path.exists(file):
+def load_db():
+    if os.path.exists(PORTFOLIO_FILE):
         try:
-            with open(file, "r", encoding="utf-8") as f: return json.load(f)
-        except: return default
-    return default
+            with open(PORTFOLIO_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+        except: return []
+    return []
 
-def save_db(file, data):
-    with open(file, "w", encoding="utf-8") as f:
+def save_db(data):
+    with open(PORTFOLIO_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 if 'my_portfolio' not in st.session_state:
-    st.session_state.my_portfolio = load_db(PORTFOLIO_FILE, [])
-if 'learned_tickers' not in st.session_state:
-    st.session_state.learned_tickers = load_db(LEARNING_FILE, {"삼성전자": "005930.KS", "TQQQ": "TQQQ"})
+    st.session_state.my_portfolio = load_db()
 
 # --- [2. 전술 보고 생성 엔진] ---
 def send_telegram_msg(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try: requests.post(url, data={'chat_id': CHAT_ID, 'text': text, 'parse_mode': 'Markdown'}, timeout=5)
+    try: requests.post(url, data={'chat_id': CHAT_ID, 'text': text, 'parse_mode': 'Markdown'}, timeout=10)
     except: pass
 
-def make_tactical_report(name, ticker, buy_price, curr_price, idx=1):
-    """사령관님이 요청하신 형식의 정밀 보고서 생성"""
-    # 전술 계산 (예시: 추매 -5%, 목표 +10%, 익절/손절 -10%)
-    # 사령관님의 예시 수치(+12%, +25% 등)를 반영한 로직
-    avg_down = buy_price * 0.95  # 추가매수권장 (평단 대비 -5% 지점 등 설정 가능)
-    target_price = buy_price * 1.10 # 목표매도 (+10%)
-    stop_loss = buy_price * 0.90 # 익절/손절 구간
-
-    currency = "원" if ".KS" in ticker or ".KQ" in ticker else "$"
-    
-    report = f"""
+def get_tactical_report(name, ticker, buy_p, idx=1):
+    """사령관님이 요청하신 1번 전술 지도 양식"""
+    try:
+        df = yf.download(ticker, period="5d", progress=False)
+        curr_p = float(df['Close'].iloc[-1])
+        
+        # 사령관님 지침에 따른 전술 수치 계산
+        # 1. 추가매수권장: 전일 저가 혹은 평단 대비 -5%
+        avg_down = buy_p * 0.95 
+        # 2. 목표매도: 평단 대비 +15% (예시)
+        target_p = buy_p * 1.15
+        # 3. 익절/손절 구간: 평단 대비 -7% (예시)
+        stop_loss = buy_p * 0.93
+        
+        symbol = "원" if ".KS" in ticker or ".KQ" in ticker else "$"
+        
+        report = f"""
 *{idx}번 [{name}] 작전 지도 수립*
-- 구매가: {currency}{buy_price:,.2f}
-- 현재가: {currency}{curr_price:,.2f}
-- 추가매수권장: {currency}{avg_down:,.2f} (예: 지지선 부근)
-- 목표매도: {currency}{target_price:,.2f} (목표 수익권)
-- 익절/손절 구간: {currency}{stop_loss:,.2f}
-    """
-    return report
+- 구매가: {symbol}{buy_p:,.2f}
+- 현재가: {symbol}{curr_p:,.2f}
+- 추가매수권장: {symbol}{avg_down:,.2f}
+- 목표매도: {symbol}{target_p:,.2f}
+- 익절 구간: {symbol}{stop_loss:,.2f}
+        """
+        return report
+    except:
+        return f"⚠️ {name}({ticker}) 데이터 분석 불가"
 
 def listen_telegram():
+    """사령관님의 명령을 최우선으로 감시"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
     try:
         res = requests.get(url, timeout=5).json()
@@ -65,61 +73,56 @@ def listen_telegram():
             
             if 'last_id' not in st.session_state or st.session_state.last_id < update_id:
                 st.session_state.last_id = update_id
-                # 매수 명령: '매수 이름 티커 평단가'
+                
                 if msg_text.startswith("매수"):
                     p = msg_text.split()
                     if len(p) >= 4:
                         name, tk, bp = p[1], p[2].upper(), float(p[3])
-                        # 중복 제거 후 추가
-                        st.session_state.my_portfolio = [i for i in st.session_state.my_portfolio if i['ticker'] != tk]
-                        st.session_state.my_portfolio.append({"name": name, "ticker": tk, "buy_price": bp})
-                        save_db(PORTFOLIO_FILE, st.session_state.my_portfolio)
+                        # 기존 종목이 있다면 업데이트, 없다면 추가
+                        new_portfolio = [i for i in st.session_state.my_portfolio if i['ticker'] != tk]
+                        new_portfolio.append({"name": name, "ticker": tk, "buy_price": bp})
+                        st.session_state.my_portfolio = new_portfolio
+                        save_db(st.session_state.my_portfolio)
                         
-                        # 즉시 분석 보고 발송
-                        df = yf.download(tk, period="1d", progress=False)
-                        curr = float(df['Close'].iloc[-1])
-                        report = make_tactical_report(name, tk, bp, curr, len(st.session_state.my_portfolio))
-                        send_telegram_msg(f"🫡 명령 수신 및 분석 완료!\n{report}")
+                        # 즉시 분석 보고서 발송
+                        report = get_tactical_report(name, tk, bp, len(st.session_state.my_portfolio))
+                        send_telegram_msg(f"🫡 명령 수신! 즉시 작전 지도를 송신합니다.\n{report}")
                         return "RERUN"
-                elif msg_text == "보고": return "REPORT"
+                elif msg_text == "보고":
+                    return "REPORT"
     except: pass
     return None
 
-# --- [3. 메인 사령부 가동] ---
-st.set_page_config(page_title="AI 전술 사령부 v16.0", layout="wide")
-st.title("🧙‍♂️ AI 전술 사령부 v16.0")
+# --- [3. 메인 화면 구성] ---
+st.set_page_config(page_title="AI 전술 사령부 v16.5", layout="wide")
+st.title("🧙‍♂️ AI 전술 사령부 v16.5")
 
-cmd = listen_telegram()
-if cmd == "RERUN": st.rerun()
+# 명령 확인
+cmd_status = listen_telegram()
+if cmd_status == "RERUN": st.rerun()
 
 if st.session_state.my_portfolio:
-    full_report_list = []
+    st.subheader("🛰️ 전 종목 실시간 감시 및 작전 수행 중")
+    all_reports = []
     cols = st.columns(min(len(st.session_state.my_portfolio), 4))
     
     for i, item in enumerate(st.session_state.my_portfolio):
-        try:
-            df = yf.download(item['ticker'], period="5d", progress=False)
-            curr = float(df['Close'].iloc[-1])
-            profit = ((curr - item['buy_price']) / item['buy_price']) * 100
-            
-            # 대시보드 표시
-            with cols[i % 4]:
-                st.metric(f"{item['name']} ({item['ticker']})", f"{curr:,.2f}", f"{profit:.2f}%")
-            
-            # 보고서 생성
-            report = make_tactical_report(item['name'], item['ticker'], item['buy_price'], curr, i+1)
-            
-            # 자동 알림 로직 (수익률이 특정 구간에 도달하면 자동 발송)
-            if profit >= 5.0 or profit <= -3.0 or cmd == "REPORT":
-                send_telegram_msg(f"🚩 실시간 전황 보고\n{report}")
-            
-            full_report_list.append(report)
-        except: continue
-
-    if cmd == "REPORT":
-        send_telegram_msg("🏛️ [사령부 전체 자산 일괄 보고]")
+        report = get_tactical_report(item['name'], item['ticker'], item['buy_price'], i+1)
+        all_reports.append(report)
+        
+        with cols[i % 4]:
+            st.info(f"📍 {item['name']} 관측 중")
+            if st.button(f"작전 종료(삭제): {item['name']}", key=f"del_{i}"):
+                st.session_state.my_portfolio.pop(i)
+                save_db(st.session_state.my_portfolio)
+                st.rerun()
+    
+    # 사령관님이 '보고'라고 쳤을 때 전체 보고
+    if cmd_status == "REPORT":
+        send_telegram_msg("🏛️ [사령부 전체 전황 보고]\n" + "\n\n".join(all_reports))
 else:
-    st.info("사령관님, 텔레그램에 '매수 이름 티커 평단가'를 입력하시게!")
+    st.warning("사령관님, 현재 배치된 자산이 없네. 텔레그램으로 '매수 이름 티커 평단가' 명령을 내려주시게!")
 
-time.sleep(10)
+# 즉각적인 반응을 위해 5초 대기 후 리프레시
+time.sleep(5)
 st.rerun()
