@@ -170,8 +170,6 @@ st.subheader("🌐 군단 통합 집단 지성 레이더")
 
 # 시스템 자동 갱신 (5분 주기 정찰)
 st.empty()
-time.sleep(300)
-st.rerun()
 
 time.sleep(300); st.rerun()
 
@@ -212,3 +210,39 @@ def sync_telegram_learning():
 
 # 실행 시마다 텔레그램 무전 확인
 sync_telegram_learning()
+
+# ==========================================================
+# [신규 추가] 6.5. 자율 정찰 및 시장 추천 보고
+# ==========================================================
+st.divider()
+st.subheader("🔭 AI 전체 시장 추천주 정찰")
+
+def autonomous_market_scan():
+    # 사령관님이 구매할 만한 후보군 정찰
+    watch_list = ["SOXL", "NVDA", "TSLA", "TQQQ"] 
+    recommendations = []
+    
+    for ticker in watch_list:
+        try:
+            hist = yf.Ticker(ticker).history(period="5d")
+            curr_p = hist['Close'].iloc[-1]
+            # 5일 평균보다 낮으면 구매 추천주로 분류
+            if curr_p < hist['Close'].mean():
+                recommendations.append(f"⭐ [추천] {ticker}: 현재가 ${curr_p:.2f} (저점 매수 유효)")
+        except: continue
+    return recommendations
+
+recs = autonomous_market_scan()
+if recs:
+    for r in recs: st.info(r)
+    # 정기 보고 시간(예: 15:10)일 경우 텔레그램으로 자동 전송
+    now_h_m = datetime.now(pytz.timezone('Asia/Seoul')).strftime('%H:%M')
+    if now_h_m in ["08:30", "08:50", "15:10", "22:30"]:
+        msg = "🕒 [자율 보고]\n" + "\n".join(recs)
+        requests.post(f"https://api.telegram.org/bot{st.secrets['TELEGRAM_TOKEN']}/sendMessage", 
+                      data={'chat_id': user_data.get("chat_id"), 'text': msg})
+else:
+    st.write("현재 시장에 특이 추천 종목이 없습니다.")
+
+time.sleep(300)
+st.rerun()
