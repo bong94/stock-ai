@@ -38,22 +38,9 @@ def get_ai_decision(curr_p, buy_p, low_20):
         return "🎯 [수익 실현] 익절 타점일세! 전리품을 챙기게."
     return "🟡 [관망] 현재는 진영을 유지하며 지켜보게."
 
-# --- [3. 통신 및 시각화] ---
-def send_telegram_with_chart(ticker, df, buy_p, low_20, message):
-    fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-    fig.add_hline(y=low_20, line_color="red", line_dash="dash", annotation_text="최후 지지선")
-    fig.add_hline(y=buy_p, line_color="blue", annotation_text="사령관 평단가")
-    fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, title=f"⚔️ {ticker} 전술 지도")
-    try:
-        fig.write_image(IMG_PATH, engine="kaleido")
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-        with open(IMG_PATH, 'rb') as photo:
-            requests.post(url, data={'chat_id': CHAT_ID, 'caption': message}, files={'photo': photo})
-    except:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={'chat_id': CHAT_ID, 'text': message})
+# --- [3. 메인 대시보드 가동] ---
+st.set_page_config(page_title="AI 전술 사령부 v10.9", layout="wide")
 
-# --- [4. 메인 대시보드 가동] ---
-st.set_page_config(page_title="AI 전술 사령부 v10.8", layout="wide")
 if 'my_portfolio' not in st.session_state:
     st.session_state.my_portfolio = load_portfolio()
 
@@ -63,36 +50,52 @@ auto_mode = st.sidebar.checkbox("🛰️ AI 자동 판단 알람 가동")
 
 with st.sidebar.form("input_form"):
     st.subheader("📥 신규 자산 배치")
-    name = st.text_input("종목명", "삼성전자")
-    tk = st.text_input("티커", "005930.KS")
-    bp = st.number_input("평단가", value=0)
+    st.caption("※ 티커는 필수 입력 사항일세 (예: 삼성전자는 005930.KS)")
+    new_name = st.text_input("종목명 (별명)", "삼성전자")
+    new_tk = st.text_input("티커 (Ticker)", "005930.KS")
+    new_bp = st.number_input("평단가", value=0)
+    
     if st.form_submit_button("배치 완료"):
-        st.session_state.my_portfolio.append({"name": name, "ticker": tk.upper(), "buy_price": bp})
-        save_portfolio(st.session_state.my_portfolio)
-        st.rerun()
+        if new_tk:
+            st.session_state.my_portfolio.append({
+                "id": str(time.time()), # 개별 삭제를 위한 고유 ID
+                "name": new_name, 
+                "ticker": new_tk.upper(), 
+                "buy_price": new_bp
+            })
+            save_portfolio(st.session_state.my_portfolio)
+            st.rerun()
+        else:
+            st.error("사령관님, 티커 없이는 분석을 시작할 수 없네!")
 
-if st.sidebar.button("🗑️ 전체 데이터 초기화"):
-    save_portfolio([])
-    st.session_state.my_portfolio = []
-    st.rerun()
+# [사이드바: 개별 자산 관리]
+st.sidebar.divider()
+st.sidebar.subheader("🗑️ 자산 개별 삭제")
+if st.session_state.my_portfolio:
+    for idx, item in enumerate(st.session_state.my_portfolio):
+        # 이름과 티커를 함께 표시하여 삭제 실수 방지
+        if st.sidebar.button(f"삭제: {item['name']}({item['ticker']})", key=f"del_{idx}"):
+            st.session_state.my_portfolio.pop(idx)
+            save_portfolio(st.session_state.my_portfolio)
+            st.rerun()
+else:
+    st.sidebar.write("보유 자산이 없네.")
 
 # [메인 전황판]
-st.title("🧙‍♂️ AI 전술 사령부 v10.8")
+st.title("🧙‍♂️ AI 전술 사령부 v10.9")
 
 if st.session_state.my_portfolio:
     k_list, g_list = [], []
     
     for item in st.session_state.my_portfolio:
         try:
-            # 5일 데이터로 현재가 확인, 1달 데이터로 지지선 확인
             df = yf.download(item['ticker'], period="1mo", progress=False)
             if not df.empty:
-                curr_p = df['Close'].iloc[-1]
-                low_20 = df['Low'].iloc[-20:].min()
+                curr_p = float(df['Close'].iloc[-1])
+                low_20 = float(df['Low'].iloc[-20:].min())
                 profit = ((curr_p - item['buy_price']) / item['buy_price']) * 100
                 decision = get_ai_decision(curr_p, item['buy_price'], low_20)
                 
-                # 에러 났던 문법 수정 (딕셔너리 생성 방식 변경)
                 info = {
                     "name": item['name'], 
                     "ticker": item['ticker'], 
@@ -106,11 +109,9 @@ if st.session_state.my_portfolio:
                 
                 if item['ticker'].endswith((".KS", ".KQ")): k_list.append(info)
                 else: g_list.append(info)
-        except Exception as e:
-            st.sidebar.error(f"⚠️ {item['name']} 로드 실패: {e}")
-            continue
+        except:
+            st.error(f"⚠️ {item['name']}({item['ticker']}) 정보를 가져오지 못했네. 티커를 확인하게!")
 
-    # 이름 기준 정렬
     k_list.sort(key=lambda x: x['name'])
     g_list.sort(key=lambda x: x['name'])
 
@@ -123,15 +124,11 @@ if st.session_state.my_portfolio:
                     f_fmt = ":,.0f" if a['ticker'].endswith((".KS", ".KQ")) else ":,.2f"
                     st.metric(a['name'], f"{a['curr']:{f_fmt[1:]}}", f"{a['profit']:.2f}%")
                     st.write(f"🤖 {a['decision']}")
-                    
-                    if auto_mode and ("손절" in a['decision'] or "추가 매수" in a['decision']):
-                        msg = f"🚨 [AI 긴급 보고] {a['name']}\n{a['decision']}\n현재가: {a['curr']}\n수익률: {a['profit']:.2f}%"
-                        send_telegram_with_chart(a['ticker'], a['df'], a['buy'], a['low'], msg)
             st.divider()
 
     render_front("🇰🇷 국내 주식 전선 (가나다순)", k_list)
     render_front("🌎 해외 주식 & 코인 전선 (ABC순)", g_list)
 else:
-    st.info("사령관님, 종목을 등록하여 정찰을 시작해 주시게!")
+    st.info("사령관님, 종목명과 티커를 입력하여 정찰을 시작해 주시게!")
 
-st.caption(f"최종 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | v10.8")
+st.caption(f"최종 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | v10.9")
