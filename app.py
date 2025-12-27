@@ -13,47 +13,26 @@ TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
 CHAT_ID = st.secrets.get("CHAT_ID", "")
 PORTFOLIO_FILE = "portfolio_db.json"
 
-def load_db():
-    if os.path.exists(PORTFOLIO_FILE):
-        try:
-            with open(PORTFOLIO_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except: return []
-    return []
-
-def save_db(data):
-    with open(PORTFOLIO_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-
 if 'my_portfolio' not in st.session_state:
-    st.session_state.my_portfolio = load_db()
+    st.session_state.my_portfolio = [] # 실제 환경에서는 load_db() 사용
 
-# --- [2. AI 정찰대: 유망 종목 발굴 엔진] ---
-def ai_scout_discovery():
-    """시장의 주요 종목을 학습하여 '적극적 투자'에 적합한 종목 추천"""
-    # 학습 대상 (사령관님이 선호할만한 변동성 있는 대형주/ETF)
-    watch_list = ["TSLA", "NVDA", "TQQQ", "SOXL", "AAPL", "005930.KS", "000660.KS", "051910.KS"]
-    recommendations = []
+# --- [2. 시장 마감 감지 로직] ---
+def check_market_closing():
+    """장이 끝나는 시점인지 확인 (마감 후 5분 이내 보고)"""
+    now_utc = datetime.now(pytz.utc)
+    k_now = now_utc.astimezone(pytz.timezone('Asia/Seoul'))
+    u_now = now_utc.astimezone(pytz.timezone('US/Eastern'))
     
-    for ticker in watch_list:
-        try:
-            df = yf.download(ticker, period="14d", progress=False)
-            curr_p = float(df['Close'].iloc[-1])
-            high_p = df['High'].max()
-            low_p = df['Low'].min()
-            
-            # 고점 대비 낙폭 과대 종목 탐색 (-10% 이상 하락 시 '기회'로 판단)
-            drop_rate = ((curr_p - high_p) / high_p) * 100
-            
-            if drop_rate <= -10: # 적극적 투자 성향: 저점 매수 기회 포착
-                strength = "강력 추천" if drop_rate <= -15 else "관심 필요"
-                recommendations.append(f"📍 {ticker}: 고점 대비 {drop_rate:.1f}% 하락 ({strength})")
-        except: continue
-        
-    return recommendations if recommendations else ["현재 시장 내 특이 저점 종목 없음"]
+    # 한국장 마감 (오후 3:30 ~ 3:35 사이 보고)
+    is_kor_closing = (k_now.weekday() < 5 and k_now.hour == 15 and 30 <= k_now.minute <= 35)
+    
+    # 미국장 마감 (새벽 04:00 ~ 04:05/서머타임 미적용 기준)
+    is_usa_closing = (u_now.weekday() < 5 and u_now.hour == 16 and 0 <= u_now.minute <= 5)
+    
+    return is_kor_closing, is_usa_closing
 
-# --- [3. 통합 분석 및 보고 엔진] ---
-def get_full_tactical_report():
+# --- [3. 통합 분석 및 종가 보고 엔진] ---
+def get_full_tactical_report(title="[실시간 전황 보고]"):
     if not st.session_state.my_portfolio:
         return "⚠️ 배치된 자산이 없습니다."
 
@@ -64,58 +43,47 @@ def get_full_tactical_report():
     except: rate = 1380.0
 
     reports = []
+    total_profit = 0
+    
     for i, item in enumerate(st.session_state.my_portfolio):
         ticker = item['ticker']
-        is_kor = any(x in ticker for x in [".KS", ".KQ"])
         try:
-            df = yf.download(ticker, period="5d", progress=False)
+            df = yf.download(ticker, period="2d", progress=False) # 오늘과 어제 데이터
             curr_p = float(df['Close'].iloc[-1])
+            prev_p = float(df['Close'].iloc[-2])
+            daily_change = ((curr_p - prev_p) / prev_p) * 100
+            
             buy_p = item['buy_price']
-            profit_rate = ((curr_p - buy_p) / buy_p) * 100
-
-            if is_kor:
-                reports.append(f"{i+1}번 [{item['name']}] ₩{curr_p:,.0f} ({profit_rate:.2f}%)")
-            else:
-                reports.append(f"{i+1}번 [{item['name']}] ${curr_p:,.2f} (₩{int(curr_p*rate):,}) ({profit_rate:.2f}%)")
+            total_profit_rate = ((curr_p - buy_p) / buy_p) * 100
+            
+            is_kor = any(x in ticker for x in [".KS", ".KQ"])
+            price_str = f"₩{curr_p:,.0f}" if is_kor else f"${curr_p:,.2f} (₩{int(curr_p*rate):,})"
+            
+            reports.append(f"{i+1}번 [{item['name']}] {price_str}\n   (오늘: {daily_change:+.2f}% / 누적: {total_profit_rate:+.2f}%)")
         except: continue
 
-    # AI 정찰 보고 추가
-    scout_report = ai_scout_discovery()
-    
-    final_msg = "🏛️ [한미 통합 전황 보고]\n" + "\n".join(reports)
-    final_msg += "\n\n🚀 [AI 정찰대 유망주 추천]\n" + "\n".join(scout_report)
-    final_msg += f"\n\n💡 25% 수익 목표 달성을 위해 실시간 학습 중..."
-    
-    return final_msg
+    msg = f"🏛️ {title}\n"
+    msg += "\n".join(reports)
+    msg += f"\n\n💡 현재 기준 환율: ₩{rate:,.1f}"
+    return msg
 
-# --- [4. UI 및 통신 로직] ---
-st.set_page_config(page_title="AI 전술 사령부 v25.0", layout="wide")
-st.title("⚔️ AI 전술 사령부 v25.0 (유망주 발굴 모드)")
+# --- [4. 실행 제어] ---
+st.set_page_config(page_title="AI 전술 사령부 v26.0", layout="wide")
+st.title("⚔️ AI 전술 사령부 v26.0 (종가 보고 모드)")
 
-# 시장 상태 확인
-tz_usa = pytz.timezone('US/Eastern')
-tz_kor = pytz.timezone('Asia/Seoul')
-usa_open = (datetime.now(tz_usa).weekday() < 5 and 9 <= datetime.now(tz_usa).hour < 16)
-kor_open = (datetime.now(tz_kor).weekday() < 5 and 9 <= datetime.now(tz_kor).hour < 15)
+is_kor_closing, is_usa_closing = check_market_closing()
 
-with st.sidebar:
-    st.header("🌐 시장 관제")
-    st.write(f"🇰🇷 한국: {'🟢' if kor_open else '🔴'}")
-    st.write(f"🇺🇸 미국: {'🟢' if usa_open else '🔴'}")
-    interval = st.slider("정찰 주기(분)", 1, 30, 5)
+# 메인 루프에서 종가 시점 감지 시 자동 보고
+if is_kor_closing:
+    send_msg = get_full_tactical_report("[🇰🇷 한국장 마감 전술 보고]")
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={'chat_id': CHAT_ID, 'text': send_msg})
+    st.success("한국장 종가 보고 완료!")
 
-# 메인 실행
-if st.session_state.my_portfolio:
-    report_text = get_full_tactical_report()
-    st.text_area("현재 전술 보고서 요약", report_text, height=300)
-    
-    if kor_open or usa_open:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={'chat_id': CHAT_ID, 'text': report_text})
-    else:
-        st.info("😴 휴장 시간입니다. AI 정찰대는 다음 작전을 위해 시장을 분석 중입니다.")
-else:
-    st.info("관리 종목이 없습니다. 텔레그램으로 명령을 내려주십시오.")
+if is_usa_closing:
+    send_msg = get_full_tactical_report("[🇺🇸 미국장 마감 전술 보고]")
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={'chat_id': CHAT_ID, 'text': send_msg})
+    st.success("미국장 종가 보고 완료!")
 
-time.sleep(interval * 60)
-st.rerun()
+# UI 상에서는 언제나 수동으로 확인 가능
+if st.button("지금 즉시 전체 보고 송신"):
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={'chat_id': CHAT_ID, 'text': get_full_tactical_report()})
