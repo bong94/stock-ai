@@ -6,7 +6,7 @@ import time
 import json
 import os
 
-# --- [1. 보안 및 설정] ---
+# --- [1. 보안 및 설정 데이터] ---
 TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
 CHAT_ID = st.secrets.get("CHAT_ID", "")
 PORTFOLIO_FILE = "portfolio_db.json"
@@ -26,57 +26,55 @@ def save_db(data):
 if 'my_portfolio' not in st.session_state:
     st.session_state.my_portfolio = load_db()
 
-# --- [2. 환율 및 전술 엔진] ---
+# --- [2. 핵심 전술 엔진] ---
 def get_exchange_rate():
-    """실시간 달러/원 환율 획득"""
     try:
         ex_data = yf.download("USDKRW=X", period="1d", progress=False)
         return float(ex_data['Close'].iloc[-1])
     except:
-        return 1350.0  # 호출 실패 시 기본 환율 적용
+        return 1380.0  # 실패 시 최근 평균 환율 적용
 
-def get_aggressive_report(name, ticker, buy_p, idx=1):
-    try:
-        # 주식 데이터 및 환율 데이터 호출
-        df = yf.download(ticker, period="5d", progress=False)
-        if df.empty: return None, 0
-        curr_p = float(df['Close'].iloc[-1])
-        rate = get_exchange_rate()
-        
-        # 적극적 투자형 전략 수치 (AI 판단 임계치)
-        avg_down = buy_p * 0.88   # -12%
-        target_p = buy_p * 1.25   # +25%
-        take_profit = buy_p * 1.10 # +10%
-        
-        # AI 작전 판단 로직
-        if curr_p <= avg_down:
-            ai_advice = "🔥 [적극 추매] 현재 바닥 구간입니다. 물량을 확보하십시오!"
-        elif curr_p >= target_p:
-            ai_advice = "🏁 [목표 도달] 전량 익절하여 승리를 확정하십시오!"
-        elif curr_p >= take_profit:
-            ai_advice = "💰 [수익 향유] 익절 구간 진입. 추세에 따라 분할 매도를 고려하십시오."
-        else:
-            ai_advice = "🛡️ [전술 대기] 현재 정상 범위 내 움직임입니다. 관망하십시오."
+def get_full_tactical_report():
+    """모든 종목을 분석하여 하나의 통합 보고서로 생성"""
+    if not st.session_state.my_portfolio:
+        return "⚠️ 현재 전선에 배치된 자산이 없습니다."
 
-        # 원화 계산
-        to_won = lambda x: f"{int(x * rate):,}"
-        
-        report = f"""
-{idx}번 [{name.upper()}] 작전 지도 수립 (환율: ₩{rate:,.1f})
-- 구매가: ${buy_p:,.2f} (₩{to_won(buy_p)})
-- 현재가: ${curr_p:,.2f} (₩{to_won(curr_p)})
-- 추가매수권장: ${avg_down:,.2f} (-12%) (₩{to_won(avg_down)})
-- 목표매도: ${target_p:,.2f} (+25%) (₩{to_won(target_p)})
-- 익절 구간: ${take_profit:,.2f} (+10%) (₩{to_won(take_profit)})
+    rate = get_exchange_rate()
+    to_won = lambda x: f"{int(x * rate):,}"
+    reports = []
+    
+    for i, item in enumerate(st.session_state.my_portfolio):
+        try:
+            df = yf.download(item['ticker'], period="5d", progress=False)
+            curr_p = float(df['Close'].iloc[-1])
+            
+            # 적극적 투자형 수치 계산
+            avg_down = item['buy_price'] * 0.88
+            target_p = item['buy_price'] * 1.25
+            take_p = item['buy_price'] * 1.10
+            
+            # AI 지침 판단
+            if curr_p <= avg_down:
+                ai_advice = "🔥 [적극 추매] 바닥 구간입니다!"
+            elif curr_p >= target_p:
+                ai_advice = "🏁 [목표 도달] 승리를 확정하십시오!"
+            else:
+                ai_advice = "🛡️ [전술 대기] 관망하십시오."
 
-💡 AI 전술 지침:
-{ai_advice}
-        """
-        return report, curr_p
-    except:
-        return None, 0
+            report = f"""{i+1}번 [{item['name'].upper()}] (환율: ₩{rate:,.1f})
+- 구매가: ${item['buy_price']:.2f} (₩{to_won(item['buy_price'])})
+- 현재가: ${curr_p:.2f} (₩{to_won(curr_p)})
+- 추가매수권장: ${avg_down:.2f} (-12%) (₩{to_won(avg_down)})
+- 목표매도: ${target_p:.2f} (+25%) (₩{to_won(target_p)})
+- 익절 구간: ${take_p:.2f} (+10%) (₩{to_won(take_p)})
+💡 AI 지침: {ai_advice}"""
+            reports.append(report)
+        except:
+            reports.append(f"{i+1}번 [{item['name']}] 데이터 분석 실패")
 
-# --- [3. 텔레그램 통신 및 자동화] ---
+    return "🏛️ [전체 적극적 전술 보고]\n\n" + "\n\n".join(reports)
+
+# --- [3. 통신 및 알람 제어] ---
 def send_telegram_msg(text):
     if not TELEGRAM_TOKEN or not CHAT_ID: return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -91,50 +89,55 @@ def listen_telegram():
         if 'last_id' in st.session_state:
             params['offset'] = st.session_state.last_id + 1
         res = requests.get(url, params=params, timeout=5).json()
+        
         if res.get("result"):
             for msg in res["result"]:
                 st.session_state.last_id = msg["update_id"]
                 text = msg["message"].get("text", "")
+                
+                # 매수 명령 처리
                 if text.startswith("매수"):
                     p = text.split()
                     if len(p) >= 4:
                         name, tk, bp = p[1], p[2].upper(), float(p[3].replace(",", ""))
+                        # 기존 티커 중복 제거 후 추가
                         st.session_state.my_portfolio = [i for i in st.session_state.my_portfolio if i['ticker'] != tk]
                         st.session_state.my_portfolio.append({"name": name, "ticker": tk, "buy_price": bp})
                         save_db(st.session_state.my_portfolio)
-                        report, _ = get_aggressive_report(name, tk, bp, len(st.session_state.my_portfolio))
-                        send_telegram_msg(f"🫡 명령 수신! 신규 자산 전술 보고드립니다.\n{report}")
+                        
+                        # 중요: 개별 보고 대신 '전체 보고'만 송신
+                        send_telegram_msg("🫡 명령 수신! 전체 전황을 다시 분석합니다.")
+                        send_telegram_msg(get_full_tactical_report())
                         st.rerun()
                 elif text == "보고":
-                    st.session_state.force_report = True
-                    st.rerun()
+                    send_telegram_msg(get_full_tactical_report())
     except: pass
 
-# --- [4. UI 구성] ---
-st.set_page_config(page_title="AI 전술 사령부 v19.0", layout="wide")
-st.title("⚔️ AI 전술 사령부 v19.0 (환율 및 AI 지침)")
+# --- [4. 관제 센터 UI] ---
+st.set_page_config(page_title="AI 전술 사령부 v20.0", layout="wide")
+st.title("⚔️ AI 전술 사령부 v20.0 (통합 보고판)")
+
+# 사이드바에서 정찰 주기 설정 (기본 5분 추천)
+with st.sidebar:
+    st.header("⚙️ 관제 설정")
+    interval = st.slider("정찰 주기 설정 (분)", 1, 30, 5)
+    st.info(f"현재 {interval}분 단위로 자동 정찰 중...")
 
 listen_telegram()
 
+# UI 화면 표시
 if st.session_state.my_portfolio:
-    all_reports = []
     cols = st.columns(min(len(st.session_state.my_portfolio), 4))
     for i, item in enumerate(st.session_state.my_portfolio):
-        report, curr = get_aggressive_report(item['name'], item['ticker'], item['buy_price'], i+1)
-        if report: all_reports.append(report)
         with cols[i % 4]:
-            profit = ((curr - item['buy_price']) / item['buy_price']) * 100 if curr > 0 else 0
-            st.metric(f"{item['name']}", f"${curr:,.2f}", f"{profit:.2f}%")
-            if st.button(f"삭제: {item['name']}", key=f"del_{i}"):
+            st.metric(f"{item['name']}", f"${item['buy_price']:.2f}")
+            if st.button(f"작전 종료: {item['name']}", key=f"del_{i}"):
                 st.session_state.my_portfolio.pop(i)
                 save_db(st.session_state.my_portfolio)
                 st.rerun()
-
-    if st.session_state.get("force_report"):
-        send_telegram_msg("🏛️ [전체 적극적 전술 보고]\n" + "\n\n".join(all_reports))
-        st.session_state.force_report = False
 else:
-    st.info("사령관님, 텔레그램으로 '매수 이름 티커 가격' 명령을 내리거나 사이드바를 이용하십시오.")
+    st.warning("전선에 배치된 자산이 없습니다. 텔레그램으로 명령을 하달하십시오.")
 
-time.sleep(10)
+# 정찰 주기에 따른 자동 갱신
+time.sleep(interval * 60)
 st.rerun()
