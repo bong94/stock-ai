@@ -199,4 +199,41 @@ for item in assets:
     except:
         continue
 
+# ==========================================================
+# 7. [신규: 텔레그램 역방향 학습] - 채팅으로 AI 가르치기
+# ==========================================================
+st.divider()
+st.subheader("📲 텔레그램 원격 학습 센터")
+
+def sync_telegram_learning():
+    token = st.secrets["TELEGRAM_TOKEN"]
+    url = f"https://api.telegram.org/bot{token}/getUpdates"
+    
+    try:
+        response = requests.get(url).json()
+        if response.get("ok"):
+            # 최신 메시지들 확인
+            for update in response["result"][-5:]: # 최근 5개 메시지 정찰
+                msg_text = update.get("message", {}).get("text", "")
+                msg_id = update.get("update_id")
+                
+                # 중복 학습 방지 (마지막 업데이트 ID 기록)
+                if "last_msg_id" not in st.session_state: st.session_state.last_msg_id = 0
+                
+                if msg_id > st.session_state.last_msg_id:
+                    if "매도" in msg_text: # 사령관님의 키워드 감지
+                        now_ts = datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d %H:%M')
+                        user_data["sell_history"].append({"date": now_ts, "log": f"[TG원격] {msg_text}"})
+                        
+                        # 파일 영구 저장
+                        with open(USER_PORTFOLIO, "w", encoding="utf-8") as f:
+                            json.dump(user_data, f, ensure_ascii=False, indent=4)
+                        
+                        st.session_state.last_msg_id = msg_id
+                        st.success(f"🤖 텔레그램 무전 수신: '{msg_text}' 학습 완료!")
+    except:
+        pass
+
+# 실행 시마다 텔레그램 무전 확인
+sync_telegram_learning()
 
