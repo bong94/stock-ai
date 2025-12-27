@@ -1,8 +1,4 @@
-# 개선된 Streamlit 앱: AI 전술 사령부 (개선판)
-# 주요 변경: Telegram offset 처리, 안전한 마크다운 이스케이프,
-# atomic 파일 저장, yfinance 캐시/검증, 명령 유효성 검사,
-# 자동 새로고침 옵션(외부 패키지 선택적 사용) 등
-
+# AI 전술 사령부 — 텔레그램 임계값 알람 추가판
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -20,17 +16,12 @@ PORTFOLIO_FILE = "portfolio_db.json"
 
 # --- 유틸리티 ---
 def escape_markdown_v2(text: str) -> str:
-    """
-    Telegram MarkdownV2 escape for user-provided text to avoid formatting injection.
-    """
     if not isinstance(text, str):
         text = str(text)
     to_escape = r"_*[]()~`>#+-=|{}.!\\"
-    # prepend backslash before each special character
     return "".join("\\" + ch if ch in to_escape else ch for ch in text)
 
 def atomic_save_json(path: str, data):
-    """임시파일로 쓰고 replace로 원자적 저장"""
     dirpath = os.path.dirname(os.path.abspath(path)) or "."
     fd, tmp = tempfile.mkstemp(dir=dirpath, prefix=".tmp_", suffix=".json")
     try:
@@ -51,7 +42,6 @@ def load_db():
                 data = json.load(f)
                 return data if isinstance(data, list) else []
         except Exception:
-            # 파일 손상 등 문제 발생 시 빈 리스트 반환 (운영 환경에서는 로그)
             return []
     return []
 
@@ -62,13 +52,22 @@ def save_db(data):
 if 'my_portfolio' not in st.session_state:
     st.session_state.my_portfolio = load_db()
 if 'last_update_id' not in st.session_state:
-    st.session_state.last_update_id = None  # Telegram offset 관리
+    st.session_state.last_update_id = None
+
+# 마이그레이션: 기존 항목에 알람 플래그가 없으면 추가
+def ensure_alert_flags(item):
+    changed = False
+    for k in ("alerted_avg_down", "alerted_take_profit", "alerted_target"):
+        if k not in item:
+            item[k] = False
+            changed = True
+    return changed
+
+for it in st.session_state.my_portfolio:
+    ensure_alert_flags(it)
 
 # --- 텔레그램 통신 ---
 def send_telegram_msg(text: str) -> bool:
-    """
-    텔레그램 전송 (MarkdownV2 사용). 반환: 성공 여부
-    """
     if not TELEGRAM_TOKEN or not CHAT_ID:
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -78,12 +77,8 @@ def send_telegram_msg(text: str) -> bool:
     except requests.RequestException:
         return False
 
-# yfinance 캐시(단기). 동일 티커에 대한 연속 요청을 완화
-@st.cache_data(ttl=20)  # 20초 캐시 (필요시 조절)
+@st.cache_data(ttl=20)
 def fetch_recent_close(ticker: str, period: str = "5d") -> Tuple[float, pd.DataFrame]:
-    """
-    최근 종가 가져오기. 실패 시 (None, df) 반환.
-    """
     try:
         df = yf.download(ticker, period=period, progress=False)
         if df is None or df.empty or 'Close' not in df.columns:
@@ -94,21 +89,15 @@ def fetch_recent_close(ticker: str, period: str = "5d") -> Tuple[float, pd.DataF
         return None, pd.DataFrame()
 
 def get_aggressive_report(name: str, ticker: str, buy_p: float, idx: int = 1) -> Tuple[str, float]:
-    """
-    전술 보고서 생성 — 실패 시 적절한 메시지와 0 반환
-    """
     curr_p, df = fetch_recent_close(ticker)
     if curr_p is None:
         return f"⚠️ {escape_markdown_v2(name)}({escape_markdown_v2(ticker)}) 분석 실패 — 가격 데이터를 불러올 수 없습니다.", 0.0
-
     try:
         avg_down = buy_p * 0.88
         target_p = buy_p * 1.25
         take_profit = buy_p * 1.10
         symbol = "₩" if any(x in ticker for x in (".KS", ".KQ", ".KR")) else "$"
-        # escape display fields for MarkdownV2
         name_e = escape_markdown_v2(name.upper())
-        ticker_e = escape_markdown_v2(ticker)
         report = (
             f"*{idx}번 [{name_e}] 작전 지도 수립*\n"
             f"- 구매가: {symbol}{buy_p:,.2f}\n"
@@ -122,16 +111,11 @@ def get_aggressive_report(name: str, ticker: str, buy_p: float, idx: int = 1) ->
         return f"⚠️ {escape_markdown_v2(name)}({escape_markdown_v2(ticker)}) 분석 중 오류 발생", 0.0
 
 def listen_telegram_once():
-    """
-    getUpdates를 offset으로 안전하게 처리 — 새 명령이 있으면 포트폴리오에 반영
-    반환: "RERUN" 또는 "REPORT" 등 특수 명령 또는 None
-    """
     if not TELEGRAM_TOKEN:
         return None
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
     params = {"timeout": 5, "limit": 10}
     if st.session_state.last_update_id is not None:
-        # 다음에 가져올 update_id (offset = last_update_id + 1)
         params["offset"] = st.session_state.last_update_id + 1
     try:
         resp = requests.get(url, params=params, timeout=10)
@@ -140,17 +124,13 @@ def listen_telegram_once():
         results = data.get("result", [])
         if not results:
             return None
-
-        # 처리된 마지막 update_id를 갱신
         for upd in results:
             st.session_state.last_update_id = max(st.session_state.last_update_id or -1, upd.get("update_id", -1))
-            # 메시지 파싱
             msg = upd.get("message") or upd.get("edited_message") or {}
             text = msg.get("text", "")
             if not text:
                 continue
             text = text.strip()
-            # "매수 <이름> <티커> <가격>"
             if text.startswith("매수"):
                 parts = text.split()
                 if len(parts) >= 4:
@@ -159,20 +139,144 @@ def listen_telegram_once():
                     try:
                         bp = float(parts[3].replace(",", ""))
                     except ValueError:
-                        # 잘못된 가격 형식 무시(혹은 에러 메시지 전송)
                         send_telegram_msg(f"⚠️ 가격 형식 오류: {escape_markdown_v2(parts[3])} — '매수 이름 티커 가격' 형식으로 보내주세요.")
                         continue
-                    # 중복 제거 및 신규 추가
                     st.session_state.my_portfolio = [i for i in st.session_state.my_portfolio if i.get('ticker') != ticker]
-                    st.session_state.my_portfolio.append({"name": name, "ticker": ticker, "buy_price": bp})
+                    new_item = {"name": name, "ticker": ticker, "buy_price": bp,
+                                "alerted_avg_down": False, "alerted_take_profit": False, "alerted_target": False}
+                    st.session_state.my_portfolio.append(new_item)
                     try:
                         save_db(st.session_state.my_portfolio)
                     except Exception:
                         pass
-                    # 즉시 보고
                     report, _ = get_aggressive_report(name, ticker, bp, len(st.session_state.my_portfolio))
                     send_telegram_msg(f"🫡 명령 수신! 적극적 투자 전술 보고드립니다.\n{report}")
                     return "RERUN"
                 else:
                     send_telegram_msg("⚠️ 매수 명령 형식: 매수 <이름> <티커> <가격>")
+            elif text == "보고":
+                return "REPORT"
+    except requests.RequestException:
+        return None
+    except Exception:
+        return None
+    return None
 
+# --- 임계값 알람 검사 ---
+def check_thresholds(enabled: bool):
+    if not enabled or not st.session_state.my_portfolio:
+        return
+    changed = False
+    for i, item in enumerate(st.session_state.my_portfolio):
+        # ensure flags exist
+        ensure_alert_flags(item)
+        buy_p = float(item.get("buy_price", 0.0))
+        curr_p, _ = fetch_recent_close(item["ticker"])
+        if curr_p is None:
+            continue
+        avg_down = buy_p * 0.88
+        take_profit = buy_p * 1.10
+        target_p = buy_p * 1.25
+        name_e = escape_markdown_v2(item.get("name", ""))
+        ticker_e = escape_markdown_v2(item.get("ticker", ""))
+        # 추가매수권장
+        if curr_p <= avg_down and not item.get("alerted_avg_down", False):
+            msg = (
+                f"📉 *추가매수권장* — [{name_e}] {ticker_e}\n"
+                f"- 구매가: {buy_p:,.2f}\n- 현재가: {curr_p:,.2f}\n- 권장가: {avg_down:,.2f} (-12%)\n"
+            )
+            send_telegram_msg(msg)
+            item["alerted_avg_down"] = True
+            changed = True
+        # 목표매도 (우선순위: 목표가 도달시 익절보다 우선)
+        if curr_p >= target_p and not item.get("alerted_target", False):
+            msg = (
+                f"🏁 *목표매도 도달* — [{name_e}] {ticker_e}\n"
+                f"- 구매가: {buy_p:,.2f}\n- 현재가: {curr_p:,.2f}\n- 목표가: {target_p:,.2f} (+25%)\n"
+            )
+            send_telegram_msg(msg)
+            item["alerted_target"] = True
+            changed = True
+        # 익절 권장 (목표가로 이미 알림이 간 경우 중복 방지)
+        if curr_p >= take_profit and not item.get("alerted_take_profit", False) and not item.get("alerted_target", False):
+            msg = (
+                f"💰 *익절 권장* — [{name_e}] {ticker_e}\n"
+                f"- 구매가: {buy_p:,.2f}\n- 현재가: {curr_p:,.2f}\n- 익절 기준: {take_profit:,.2f} (+10%)\n"
+            )
+            send_telegram_msg(msg)
+            item["alerted_take_profit"] = True
+            changed = True
+    if changed:
+        try:
+            save_db(st.session_state.my_portfolio)
+        except Exception:
+            pass
+
+# --- Streamlit UI ---
+st.set_page_config(page_title="AI 전술 사령부 v17.0 (알람 포함)", layout="wide")
+st.title("⚔️ AI 전술 사령부 v17.0 — 텔레그램 임계값 알람")
+
+auto_refresh = st.sidebar.checkbox("자동 새로고침 (5초)", value=False)
+alerts_enabled = st.sidebar.checkbox("임계값 알람 활성화", value=True)
+st.sidebar.markdown("알람을 끄려면 체크해제하세요. 운영 환경에서는 webhook 권장.")
+
+if st.sidebar.button("텔레그램에서 명령 확인"):
+    cmd = listen_telegram_once()
+    if cmd == "RERUN":
+        st.experimental_rerun()
+    elif cmd == "REPORT":
+        reports = []
+        for i, it in enumerate(st.session_state.my_portfolio):
+            r, _ = get_aggressive_report(it['name'], it['ticker'], it['buy_price'], i+1)
+            reports.append(r)
+        send_telegram_msg("🏛️ [전체 적극적 전술 지도 보고]\n" + "\n\n".join(reports))
+        st.success("보고 전송 완료")
+
+# 자동 새로고침에서 텔레그램 검사 및 임계값 검사 실행
+if auto_refresh:
+    try:
+        from streamlit_autorefresh import st_autorefresh
+        count = st_autorefresh(interval=5 * 1000, limit=None, key="autorefresh")
+        _ = listen_telegram_once()
+        check_thresholds(alerts_enabled)
+    except Exception:
+        st.info("자동 새로고침을 사용하려면 streamlit-autorefresh를 설치.")
+
+# 수동으로도 검사/알림 트리거 가능
+if st.sidebar.button("임계값 즉시 검사 및 알림 전송"):
+    check_thresholds(alerts_enabled)
+    st.success("검사 완료")
+
+if st.session_state.my_portfolio:
+    all_reports = []
+    cols = st.columns(min(len(st.session_state.my_portfolio), 4))
+
+    for i, item in enumerate(list(st.session_state.my_portfolio)):
+        report_text, current_p = get_aggressive_report(item['name'], item['ticker'], item['buy_price'], i+1)
+        all_reports.append(report_text)
+        profit = 0.0
+        if current_p:
+            try:
+                profit = ((current_p - item['buy_price']) / item['buy_price']) * 100
+            except Exception:
+                profit = 0.0
+
+        col = cols[i % 4]
+        with col:
+            st.metric(item['name'], f"{current_p:,.2f}" if current_p else "N/A", f"{profit:.2f}%")
+            if st.button(f"작전 종료: {item['name']}", key=f"del_{i}"):
+                st.session_state.my_portfolio.pop(i)
+                try:
+                    save_db(st.session_state.my_portfolio)
+                except Exception:
+                    pass
+                st.experimental_rerun()
+
+    if st.sidebar.button("전체 보고 텔레그램 전송"):
+        send_telegram_msg("🏛️ [전체 적극적 전술 지도 보고]\n" + "\n\n".join(all_reports))
+        st.success("보고 전송 완료")
+else:
+    st.info("사령관님, 현재 대기 중인 자산이 없습니다. 텔레그램 명령을 기다립니다!")
+
+st.markdown("---")
+st.markdown("설명: 임계값 알람은 각 항목별로 한 번만 전송됩니다. 플래그를 초기화하려면 해당 항목을 제거 후 재추가하거나 JSON에서 플래그 값을 수동 변경하세요.")
