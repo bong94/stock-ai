@@ -13,77 +13,131 @@ TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "")
 CHAT_ID = st.secrets.get("CHAT_ID", "")
 PORTFOLIO_FILE = "portfolio_db.json"
 
+def load_db():
+    if os.path.exists(PORTFOLIO_FILE):
+        try:
+            with open(PORTFOLIO_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except: return []
+    return []
+
+def save_db(data):
+    with open(PORTFOLIO_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
 if 'my_portfolio' not in st.session_state:
-    st.session_state.my_portfolio = [] # 실제 환경에서는 load_db() 사용
+    st.session_state.my_portfolio = load_db()
 
-# --- [2. 시장 마감 감지 로직] ---
-def check_market_closing():
-    """장이 끝나는 시점인지 확인 (마감 후 5분 이내 보고)"""
-    now_utc = datetime.now(pytz.utc)
-    k_now = now_utc.astimezone(pytz.timezone('Asia/Seoul'))
-    u_now = now_utc.astimezone(pytz.timezone('US/Eastern'))
-    
-    # 한국장 마감 (오후 3:30 ~ 3:35 사이 보고)
-    is_kor_closing = (k_now.weekday() < 5 and k_now.hour == 15 and 30 <= k_now.minute <= 35)
-    
-    # 미국장 마감 (새벽 04:00 ~ 04:05/서머타임 미적용 기준)
-    is_usa_closing = (u_now.weekday() < 5 and u_now.hour == 16 and 0 <= u_now.minute <= 5)
-    
-    return is_kor_closing, is_usa_closing
+# --- [2. 핵심 엔진: 시장 확인 및 분석] ---
+def get_market_status():
+    tz_kor = pytz.timezone('Asia/Seoul')
+    tz_usa = pytz.timezone('US/Eastern')
+    k_now = datetime.now(tz_kor)
+    u_now = datetime.now(tz_usa)
+    is_k = (k_now.weekday() < 5 and 9 <= k_now.hour < 16)
+    is_u = (u_now.weekday() < 5 and 9 <= u_now.hour < 16)
+    return is_k, is_u
 
-# --- [3. 통합 분석 및 종가 보고 엔진] ---
-def get_full_tactical_report(title="[실시간 전황 보고]"):
-    if not st.session_state.my_portfolio:
-        return "⚠️ 배치된 자산이 없습니다."
-
-    # 환율 획득
+def get_exchange_rate():
     try:
         ex_data = yf.download("USDKRW=X", period="1d", progress=False)
-        rate = float(ex_data['Close'].iloc[-1])
-    except: rate = 1380.0
+        return float(ex_data['Close'].iloc[-1])
+    except: return 1380.0
 
-    reports = []
-    total_profit = 0
+def get_full_tactical_report():
+    if not st.session_state.my_portfolio:
+        return "⚠️ 현재 배치된 자산이 없습니다. '매수 이름 티커 평단가'를 입력하십시오."
     
+    rate = get_exchange_rate()
+    reports = []
     for i, item in enumerate(st.session_state.my_portfolio):
         ticker = item['ticker']
+        is_kor = any(x in ticker for x in [".KS", ".KQ"])
         try:
-            df = yf.download(ticker, period="2d", progress=False) # 오늘과 어제 데이터
+            df = yf.download(ticker, period="5d", progress=False)
             curr_p = float(df['Close'].iloc[-1])
-            prev_p = float(df['Close'].iloc[-2])
-            daily_change = ((curr_p - prev_p) / prev_p) * 100
-            
             buy_p = item['buy_price']
-            total_profit_rate = ((curr_p - buy_p) / buy_p) * 100
             
-            is_kor = any(x in ticker for x in [".KS", ".KQ"])
-            price_str = f"₩{curr_p:,.0f}" if is_kor else f"${curr_p:,.2f} (₩{int(curr_p*rate):,})"
+            # 적극적 투자 지표
+            avg_down, target_p = buy_p * 0.88, buy_p * 1.25
+            profit = ((curr_p - buy_p) / buy_p) * 100
             
-            reports.append(f"{i+1}번 [{item['name']}] {price_str}\n   (오늘: {daily_change:+.2f}% / 누적: {total_profit_rate:+.2f}%)")
+            if is_kor:
+                reports.append(f"{i+1}번 [{item['name']}] ₩{curr_p:,.0f} ({profit:+.2f}%)")
+            else:
+                reports.append(f"{i+1}번 [{item['name']}] ${curr_p:,.2f} (₩{int(curr_p*rate):,}) ({profit:+.2f}%)")
         except: continue
+    
+    return "🏛️ [전체 적극적 전술 보고]\n\n" + "\n".join(reports)
 
-    msg = f"🏛️ {title}\n"
-    msg += "\n".join(reports)
-    msg += f"\n\n💡 현재 기준 환율: ₩{rate:,.1f}"
-    return msg
+# --- [3. 통신: 일괄 처리(Bulk) 및 명령 수신] ---
+def send_telegram_msg(text):
+    if not TELEGRAM_TOKEN or not CHAT_ID: return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, data={'chat_id': CHAT_ID, 'text': text})
 
-# --- [4. 실행 제어] ---
-st.set_page_config(page_title="AI 전술 사령부 v26.0", layout="wide")
-st.title("⚔️ AI 전술 사령부 v26.0 (종가 보고 모드)")
+def listen_telegram():
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    try:
+        params = {'timeout': 1}
+        if 'last_id' in st.session_state: params['offset'] = st.session_state.last_id + 1
+        res = requests.get(url, params=params, timeout=5).json()
+        
+        if res.get("result"):
+            for msg in res["result"]:
+                st.session_state.last_id = msg["update_id"]
+                full_text = msg["message"].get("text", "")
+                
+                # 줄바꿈 기준으로 여러 명령 분리 처리
+                lines = full_text.split('\n')
+                added_count = 0
+                
+                for line in lines:
+                    if line.startswith("매수"):
+                        p = line.split()
+                        if len(p) >= 4:
+                            name = p[1]
+                            tk = p[2].upper()
+                            # 쉼표(,) 제거 후 숫자로 변환
+                            raw_price = p[3].replace(",", "")
+                            try:
+                                bp = float(raw_price)
+                                # 중복 제거 후 추가
+                                st.session_state.my_portfolio = [i for i in st.session_state.my_portfolio if i['ticker'] != tk]
+                                st.session_state.my_portfolio.append({"name": name, "ticker": tk, "buy_price": bp})
+                                added_count += 1
+                            except: continue
+                
+                if added_count > 0:
+                    save_db(st.session_state.my_portfolio)
+                    send_telegram_msg(f"🫡 {added_count}개 종목 일괄 배치 완료!")
+                    send_telegram_msg(get_full_tactical_report())
+                    st.rerun()
+                elif full_text == "보고":
+                    send_telegram_msg(get_full_tactical_report())
+    except: pass
 
-is_kor_closing, is_usa_closing = check_market_closing()
+# --- [4. UI 구성] ---
+st.set_page_config(page_title="한미 통합 사령부 v27.0", layout="wide")
+st.title("⚔️ AI 전술 사령부 v27.0")
 
-# 메인 루프에서 종가 시점 감지 시 자동 보고
-if is_kor_closing:
-    send_msg = get_full_tactical_report("[🇰🇷 한국장 마감 전술 보고]")
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={'chat_id': CHAT_ID, 'text': send_msg})
-    st.success("한국장 종가 보고 완료!")
+listen_telegram()
+is_k, is_u = get_market_status()
 
-if is_usa_closing:
-    send_msg = get_full_tactical_report("[🇺🇸 미국장 마감 전술 보고]")
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={'chat_id': CHAT_ID, 'text': send_msg})
-    st.success("미국장 종가 보고 완료!")
+with st.sidebar:
+    st.header("🌐 실시간 관제")
+    st.write(f"🇰🇷 한국: {'🟢' if is_k else '🔴'}")
+    st.write(f"🇺🇸 미국: {'🟢' if is_u else '🔴'}")
+    interval = st.slider("정찰 주기(분)", 1, 30, 5)
 
-# UI 상에서는 언제나 수동으로 확인 가능
-if st.button("지금 즉시 전체 보고 송신"):
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={'chat_id': CHAT_ID, 'text': get_full_tactical_report()})
+if st.session_state.my_portfolio:
+    st.subheader("📡 현재 배치 자산 실황")
+    st.dataframe(pd.DataFrame(st.session_state.my_portfolio), use_container_width=True)
+    if is_k or is_u:
+        # 정기 알람 로직
+        pass 
+else:
+    st.info("텔레그램으로 일괄 매수 명령을 내려주십시오.")
+
+time.sleep(interval * 60)
+st.rerun()
