@@ -1,12 +1,4 @@
 streamlit
+requests
 yfinance
 pandas
-numpy
-requests
-plotly
-scipy
-kaleido>=1.0.0
-plotly>=6.0.0
-pyupbit
-streamlit-autorefresh
-mojito2 @ https://github.com/sculper/mojito2/archive/refs/heads/main.zip
