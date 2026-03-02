@@ -10,8 +10,8 @@ import time
 # 1. 전술 지침 및 기준가 [cite: 2026-02-26]
 RE_INCOME_EXIT = 89070 
 
-st.set_page_config(page_title="봉94 통합 무인 사령부 v7.1", layout="wide")
-st.title("🎖️ 봉94 사령관 통합 무인 전투 시스템 v7.1")
+st.set_page_config(page_title="봉94 통합 무인 사령부 v7.2", layout="wide")
+st.title("🎖️ 봉94 사령관 통합 무인 전투 시스템 v7.2")
 
 # 2. 보안 키 로드
 try:
@@ -24,7 +24,7 @@ except:
     st.error("⚠️ Streamlit Secrets 설정을 확인해주세요!")
     st.stop()
 
-# 3. [보강] 한투 API 통신 엔진 (에러 방지용)
+# 3. 한투 API 통신 엔진
 def get_token():
     url = "https://openapi.koreainvestment.com:9443/oauth2/tokenP"
     data = {"grant_type": "client_credentials", "appkey": APP_KEY, "appsecret": APP_SECRET}
@@ -32,7 +32,7 @@ def get_token():
     return res.json().get('access_token')
 
 def get_interest_stocks(token):
-    """안전하게 관심종목을 가져오는 함수"""
+    """형님이 알려주신 0161번 관심그룹을 정찰합니다"""
     url = "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/interest-stock"
     headers = {
         "Content-Type": "application/json", 
@@ -41,10 +41,10 @@ def get_interest_stocks(token):
         "appsecret": APP_SECRET, 
         "tr_id": "HHKST01010100"
     }
-    # fid_interest_group_id: "000"은 첫 번째 관심그룹입니다
-    res = requests.get(url, headers=headers, params={"fid_interest_group_id": "000"})
+    # ⭐ 형님의 요청대로 좌표를 0161로 수정했습니다!
+    params = {"fid_interest_group_id": "0161"} 
+    res = requests.get(url, headers=headers, params=params)
     
-    # [핵심 보강] 응답이 JSON이 아닐 경우를 대비
     try:
         return res.json().get('output', [])
     except:
@@ -56,7 +56,7 @@ try:
     stocks = get_interest_stocks(token)
 
     if stocks:
-        st.subheader(f"📡 현재 감시 중인 관심종목 ({len(stocks)}개)")
+        st.subheader(f"📡 현재 감시 중인 0161번 그룹 종목 ({len(stocks)}개)")
         battle_log = []
 
         for s in stocks:
@@ -73,8 +73,8 @@ try:
 
         st.table(pd.DataFrame(battle_log))
     else:
-        st.warning("📡 한투 앱의 [관심종목 000번 그룹]에 종목을 추가했는지 확인해주세요!")
-        st.info("💡 종목을 추가했는데도 안 뜨면, 증권사 서버 점검 시간일 수 있습니다.")
+        st.warning(f"📡 0161번 관심그룹이 비어있거나 접근할 수 없습니다.")
+        st.info("💡 한투 앱에서 [0161] 그룹에 종목이 등록되어 있는지 꼭 확인해주세요!")
 
 except Exception as e:
     st.error(f"🚨 시스템 정찰 중 오류 발생: {e}")
