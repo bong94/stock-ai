@@ -1,35 +1,15 @@
 import streamlit as st
 import requests
 import json
-import yfinance as yf
-from datetime import datetime
-import pytz
-
-# 사령부 설정
-st.set_page_config(page_title="봉94 실전 채굴기 v2.1", layout="wide")
-st.title("🚀 봉94 사령관 실전 자동 채굴 시스템")
-
-# 1. 과거 기록 [cite: 2026-02-26]
-LAST_SELL_PRICE_KRW = 89070 
-
-# 2. 실시간 데이터 정찰import streamlit as st
-import requests
-import json
-import yfinance as yf
-from datetime import datetime
-import pytz
+import pandas as pd
 import time
-
-# 1. 전술 설정 (형님의 기준점) [cite: 2026-02-26]
-LAST_SELL_PRICE = 89070  # 형님의 과거 매도가
-BUY_TARGET = LAST_SELL_PRICE * 0.85  # -15% 지점 (약 75,700원) 도달 시 추매
-SELL_TARGET = LAST_SELL_PRICE * 1.10 # +10% 지점 (약 98,000원) 도달 시 익절
+from datetime import datetime
 
 # 사령부 설정
-st.set_page_config(page_title="봉94 풀오토 사령부", layout="wide")
-st.title("🤖 봉94 사령관 무인 자동 채굴기 (v3.0)")
+st.set_page_config(page_title="봉94 관심종목 실전 사령부", layout="wide")
+st.title("🎯 한투 관심종목 실시간 무인 타격기 (v6.0)")
 
-# 2. 보안 키 로드
+# 1. 보안 키 로드
 try:
     APP_KEY = st.secrets["APP_KEY"]
     APP_SECRET = st.secrets["APP_SECRET"]
@@ -40,96 +20,61 @@ except:
     st.error("⚠️ Secrets 설정을 확인해주세요!")
     st.stop()
 
-# 3. 텔레그램 무전 함수
-def send_msg(text):
-    requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data={'chat_id': CHAT_ID, 'text': text})
+# 2. 한투 API 접근 토큰 발급
+def get_token():
+    url = "https://openapi.koreainvestment.com:9443/oauth2/tokenP"
+    data = {"grant_type": "client_credentials", "appkey": APP_KEY, "appsecret": APP_SECRET}
+    res = requests.post(url, data=json.dumps(data))
+    return res.json().get('access_token')
 
-# 4. 실시간 시장 정찰
-try:
-    stock = yf.Ticker("O") # 리얼티 인컴
-    curr_p_usd = float(stock.history(period="1d")['Close'].iloc[-1])
-    rate = float(yf.download("USDKRW=X", period="1d", progress=False)['Close'].iloc[-1])
-    curr_p_krw = int(curr_p_usd * rate)
+# 3. [핵심] 한투 관심종목 리스트 긁어오기 함수
+def get_my_interest_stocks(token):
+    url = "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/interest-stock"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET,
+        "tr_id": "HHKST01010100" # 관심종목 조회 ID
+    }
+    # 보통 000번 그룹이 기본 관심종목입니다
+    params = {"fid_interest_group_id": "000"} 
+    res = requests.get(url, headers=headers, params=params)
+    return res.json().get('output', [])
 
-    # 화면 표시
-    st.metric("현재가", f"₩{curr_p_krw:,}", f"{curr_p_krw - LAST_SELL_PRICE:+,}원")
-    
-    # 5. [지능형 자동 매매 로직]
-    if "last_action_date" not in st.session_state:
-        st.session_state.last_action_date = ""
+# 4. 실시간 감시 및 지능형 보고
+token = get_token()
+interest_stocks = get_my_interest_stocks(token)
 
-    today = datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d')
+if interest_stocks:
+    st.subheader(f"📡 한투 관심종목({len(interest_stocks)}개) 정찰 현황")
+    display_data = []
 
-    # A. 추매 전략 (가격이 목표가보다 낮을 때)
-    if curr_p_krw <= BUY_TARGET:
-        if st.session_state.last_action_date != f"BUY_{today}":
-            # 실제 매수 주문 코드 삽입 가능
-            report = f"🚨 [추매 보고]\n종목: 리얼티인컴\n가격: ₩{curr_p_krw:,}\n지침: 과거가 대비 저점 판단, 1주 자동 매수 완료!"
-            send_msg(report)
-            st.session_state.last_action_date = f"BUY_{today}"
-            st.success("✅ 자동 추매 실행 및 보고 완료")
+    for stock in interest_stocks:
+        name = stock['stck_prpr_name'] # 종목명
+        price = int(stock['stck_prpr']) # 현재가
+        change = stock['prdy_vrss_sign'] # 전일대비 기호
+        
+        # 지능형 전술 판단 (예: 전일대비 5% 이상 하락 시 추매 보고)
+        status = "🛡️ 정상 관망"
+        if "-" in change: # 하락 중일 때
+            status = "🚨 저점 매수 검토"
+            # 여기서 자동 매수 주문 코드 실행 가능!
 
-    # B. 익절 전략 (가격이 목표가보다 높을 때)
-    elif curr_p_krw >= SELL_TARGET:
-        if st.session_state.last_action_date != f"SELL_{today}":
-            profit = curr_p_krw - LAST_SELL_PRICE
-            report = f"🚀 [익절 보고]\n종목: 리얼티인컴\n가격: ₩{curr_p_krw:,}\n수익: +₩{profit:,}\n지침: 목표가 도달, 전량 익절 완료! 고생하셨습니다."
-            send_msg(report)
-            st.session_state.last_action_date = f"SELL_{today}"
-            st.balloons()
-            st.success("✅ 자동 익절 실행 및 보고 완료")
+        display_data.append({"종목명": name, "현재가": f"{price:,}원", "전술지침": status})
 
-    else:
-        st.info(f"🛡️ [관망 중] 추매가(₩{int(BUY_TARGET):,})와 익절가(₩{int(SELL_TARGET):,}) 사이에서 순항 중입니다.")
+    st.table(pd.DataFrame(display_data))
+else:
+    st.info("한투 앱의 관심종목(000번 그룹)이 비어있거나 연결 오류입니다.")
 
-except Exception as e:
-    st.error(f"정찰 오류: {e}")
+# 5. 텔레그램 자동 보고 (가격 변동 시)
+if st.button("📢 현재 관심종목 전체 보고서 받기"):
+    msg = "🏛️ [봉94 관심종목 통합 보고]\n"
+    for d in display_data:
+        msg += f"- {d['종목명']}: {d['현재가']} ({d['전술지침']})\n"
+    requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data={'chat_id': CHAT_ID, 'text': msg})
+    st.success("무전 발송 완료!")
 
 # 5분마다 자동 갱신
 time.sleep(300)
 st.rerun()
-st.subheader("📊 실시간 시장 정찰 및 주문")
-
-try:
-    ticker = "O" # 리얼티 인컴
-    stock = yf.Ticker(ticker)
-    curr_p_usd = float(stock.history(period="1d")['Close'].iloc[-1])
-    
-    # 환율 및 원화 계산
-    rate_data = yf.download("USDKRW=X", period="1d", progress=False)
-    rate = float(rate_data['Close'].iloc[-1])
-    curr_p_krw = int(curr_p_usd * rate)
-    diff = curr_p_krw - LAST_SELL_PRICE_KRW
-
-    col1, col2 = st.columns(2)
-    col1.metric("리얼티 인컴 (현재가)", f"₩{curr_p_krw:,}", f"{diff:,}원")
-    col2.metric("사령관님 과거 매도가", f"₩{LAST_SELL_PRICE_KRW:,}")
-
-    st.divider()
-
-    # 3. [핵심] 주문 버튼 등장 조건
-    if curr_p_krw < LAST_SELL_PRICE_KRW:
-        st.success(f"🎯 타점 포착! 현재가가 매도가보다 ₩{abs(diff):,}원 저렴합니다.")
-        
-        # 버튼을 누르면 진짜 주문이 나가는 곳입니다
-        if st.button("🚀 즉시 리얼티인컴 1주 매수 실행"):
-            # 텔레그램 보고 기능 (Secrets 설정 확인 필수)
-            try:
-                TG_TOKEN = st.secrets["TELEGRAM_TOKEN"]
-                CHAT_ID = st.secrets["CHAT_ID"]
-                msg = f"🏛️ [봉94 사령부 보고]\n✅ 리얼티인컴 1주 매수 버튼 클릭!\n💰 예상가: ₩{curr_p_krw:,}"
-                requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data={'chat_id': CHAT_ID, 'text': msg})
-                st.balloons() # 축하 풍선!
-                st.write("✅ 사령관님, 매수 명령을 전달하고 텔레그램 무전을 보냈습니다!")
-            except:
-                st.error("텔레그램 설정(Secrets)을 확인해주세요!")
-    else:
-        st.warning("⏳ 현재가는 매도가보다 높습니다. 최적의 타점을 기다리는 중...")
-
-except Exception as e:
-    st.error(f"시스템 가동 중 오류: {e}")
-
-# 4. 하단 무전 테스트 버튼
-if st.button("📢 현재 상황 텔레그램 무전 테스트"):
-    st.write("무전 발송 중...")
-
